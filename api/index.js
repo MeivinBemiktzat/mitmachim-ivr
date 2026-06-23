@@ -176,13 +176,9 @@ function idList(parts) {
  * @param {number} waitSec זמן המתנה למקש בשניות (ברירת מחדל 7)
  * @returns {string} פקודת read משורשרת התואמת לתפריט פנימי מהיר
  */
-function buildInteractiveRead(paramName, parts, waitSec = 9) {
-  const safe = parts
-    .filter(Boolean)
-    .map(x => `t-${cleanText(x)}`)
-    .join(',');
-
-  return `read=${safe}=${paramName},no,1,1,${waitSec},Digits,no,no`;
+function buildFastMenuRead(paramName, waitSec = 7) {
+  // הגדרת אורך מינימלי 1, מקסימום 1, ללא תווים מיוחדים, סוג ספרות, ללא בקשת קוד אישור קולי (no בסוף)
+  return `read=t- אנא הקישו בחירה=${paramName},no,1,1,${waitSec},Digits,no,no`;
 }
 
 /**
@@ -455,17 +451,21 @@ module.exports = async (req, res) => {
 
     // ===== מסך תפריט ראשי =====
     if (currentScreen === 'main') {
-      const mainMenuMessage = idList([
-        'ברוכים הבאים לפורום מתמחים טופ.',
-        'לכניסה לפוסטים האחרונים הקישו 1.',
-        'לשמיעת הנושאים האחרונים שנפתחו הקישו 2.',
-        'לכניסה לפי קטגוריות הקישו 3.'
-      ]);
-      const readCommand = buildFastMenuRead('mainsel', 7);
-      
-      // אנו מחזירים את התפריט כהודעה ואז קלט מהיר. ומגדירים את המסך הבא לדיבאג
-      return res.send(`${mainMenuMessage}&${readCommand}&api_add_screen=main`);
-    }
+      return res.send(
+  buildInteractiveRead(
+    'mainsel',
+    [
+      'ברוכים הבאים לפורום מתמחים טופ הטלפוני.',
+      'כאן תוכלו להאזין לפוסטים חדשים, נושאים אחרונים ודיונים מהפורום.',
+      'לכניסה לפוסטים האחרונים הקישו 1.',
+      'לשמיעת הנושאים האחרונים שנפתחו הקישו 2.',
+      'לכניסה לפי קטגוריות הקישו 3.'
+    ],
+    7
+  )
+  +
+  '&api_add_screen=main'
+);
 
     // ===== מסך פוסטים אחרונים מהפורום =====
     if (currentScreen === 'recent') {
@@ -482,7 +482,7 @@ module.exports = async (req, res) => {
       const topicIdsString = topics.map(t => t.tid).join(',');
       const readCommand = buildFastMenuRead('recentsel', 9);
       
-      return res.send(`${buildInteractiveRead('recentsel', parts)}&api_add_tids=${topicIdsString}&api_add_screen=recent`);
+      return res.send(`${audioList}&${readCommand}&api_add_tids=${topicIdsString}&api_add_screen=recent`);
     }
 
     // ===== מסך נושאים אחרונים שנפתחו =====
@@ -509,7 +509,7 @@ module.exports = async (req, res) => {
       const topicIdsString = topics.map(t => t.tid).join(',');
       const readCommand = buildFastMenuRead('topicsel', 9);
       
-      return res.send(`${buildInteractiveRead('recentsel', parts)}&api_add_tids=${topicIdsString}&api_add_screen=topics`);
+      return res.send(`${audioList}&${readCommand}&api_add_tids=${topicIdsString}&api_add_screen=topics`);
     }
 
     // ===== מסך קטגוריות ראשיות ותתי-קטגוריות =====
@@ -542,7 +542,7 @@ module.exports = async (req, res) => {
         }
         
         const readCommand = buildFastMenuRead('catsel', 9);
-        return res.send(`${buildInteractiveRead('recentsel', parts)}&api_add_cids=${categoryIdsString}&api_add_curcid=${cid}&api_add_screen=categories`);
+        return res.send(`${audioList}&${readCommand}&api_add_cids=${categoryIdsString}&api_add_curcid=${cid}&api_add_screen=categories`);
       } else if (cid) {
         // אם אין תתי-קטגוריות, נעביר אוטומטית למסך השמעת הנושאים של קטגוריה זו בתוך ה-API
         return res.send(`api_add_screen=cattopics&api_add_cid=${cid}&read=t-מיד נטען את הנושאים=dummy,no,1,1,1,Digits,no,no`);
@@ -572,7 +572,7 @@ module.exports = async (req, res) => {
       const topicIdsString = topics.map(t => t.tid).join(',');
       const readCommand = buildFastMenuRead('cattopicsel', 9);
       
-      return res.send(`${buildInteractiveRead('recentsel', parts)}&api_add_tids=${topicIdsString}&api_add_screen=cattopics`);
+      return res.send(`${audioList}&${readCommand}&api_add_tids=${topicIdsString}&api_add_screen=cattopics`);
     }
 
     // ===== מסך שמיעת נושא (השמעת פוסטים והודעות בצורה אינטראקטיבית) =====
@@ -659,7 +659,7 @@ module.exports = async (req, res) => {
     console.error('[Global API Exception] Critical failure in module execution:', globalError);
     const systemErrorAudio = idList([
       'אירעה שגיאה זמנית בתקשורת ובטעינת הנתונים משרתי פורום מתמחים טופ.',
-      'אנא המתינו מספר שניות ונסו שוב מאוחר יותר.'
+      'אנא נסו שוב מאוחר יותר.'
     ]);
     return res.send(`${systemErrorAudio}&api_add_screen=main&read=t-אנא המתינו=dummy,no,1,1,2,Digits,no,no`);
   }

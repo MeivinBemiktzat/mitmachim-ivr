@@ -467,7 +467,7 @@ async function handleMainMenu(params, res) {
         ];
         const audioOutput = idList(audioParts);
         const readCommand = buildRead('mainsel', '', 1, 1, '9');
-        return safeSend(res, `${audioOutput}${readCommand}&api_add_screen=main`);
+        return safeSend(res, `${readCommand}${audioOutput}&api_add_screen=main`);
       }
     }
   }
@@ -485,7 +485,7 @@ async function handleMainMenu(params, res) {
 
   const audioOutput = idList(welcomeAudio);
   const readCommand = buildRead('mainsel', '', 1, 1, '10');
-  return safeSend(res, `${audioOutput}${readCommand}&api_add_screen=main`);
+  return safeSend(res, `${readCommand}${audioOutput}&api_add_screen=main`);
 }
 
 // ============================================================================
@@ -1610,7 +1610,7 @@ function sendFallbackToMain(res, msgText) {
   ]);
 
   const readCommand = buildRead('mainsel', '', 1, 1, '10');
-  return safeSend(res, `${audioOutput}${readCommand}&api_add_screen=main`);
+  return safeSend(res, `${readCommand}${audioOutput}&api_add_screen=main`);
 }
 
 // ============================================================================

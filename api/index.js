@@ -229,7 +229,7 @@ function buildReadMenu(parts, paramName, opts = {}) {
     .join('.');
 
   // פורמט ימות המשיח: read^PROMPT^VARNAME>reuseExisting>maxDigits>minDigits>timeout>type>blockStar>blockZero
-  return `read^${promptStr}^${paramName}>no>${max}>${min}>${waitSec}>${type}>no>no`;
+  return `read^${promptStr}^${paramName}>no>${max}>${min}>${waitSec}>${type}>>>>>>>>>no`;
 }
 
 /**

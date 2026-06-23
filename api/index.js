@@ -49,19 +49,8 @@ res.status(200).send(output.replace(/\n/g, ''));
 
 /* ========= תפריט ראשי ========= */
 
-function buildMainMenu(ctx) {
-  switch (ctx.pressed) {
-    case '1': return askWithState('recent_posts',  { index: 0 }, ctx);
-    case '2': return askWithState('recent_topics', { index: 0 }, ctx);
-    case '3': return askWithState('categories',    { index: 0 }, ctx);
-    case '0': return sayText('להתראות') + endCall();
-    default:
-      return (
-        sayText('ברוכים הבאים לפורום מתמחים טופ') +
-        sayMenu(['1 פוסטים אחרונים', '2 נושאים אחרונים', '3 קטגוריות', '0 ניתוק'],
-                'main', {}, ctx)
-      );
-  }
+function buildMainMenu() {
+  return 'read=t-הקש ספרה אחת';
 }
 
 /* ========= פוסטים אחרונים ========= */

@@ -674,13 +674,10 @@ module.exports = async (req, res) => {
 
     // ===== מסך תפריט ראשי =====
     if (currentScreen === 'main') {
-      const readCmd = buildReadMenu([
-        'ברוכים הבאים לפורום מתמחים טופ הטלפוני',
-        'לכניסה לפוסטים האחרונים הקישו 1',
-        'לשמיעת הנושאים האחרונים שנפתחו הקישו 2',
-        'לכניסה לפי קטגוריות הקישו 3',
-        'לחיפוש בפורום הקישו 4'
-      ], 'mainsel', { waitSec: 7 });
+const readCmd = buildReadMenu([
+  'בדיקה',
+  'הקישו אחת'
+], 'mainsel', { waitSec: 20 });
       return res.send(buildResponse(readCmd, { screen: 'main' }));
     }
 

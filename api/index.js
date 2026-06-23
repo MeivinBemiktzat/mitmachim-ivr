@@ -228,7 +228,7 @@ function buildReadMenu(parts, paramName, opts = {}) {
     .map(p => 't-' + sanitizePart(p))
     .join('.');
 
-  return `read^${promptStr}^${paramName}>no>${max}>${min}>${waitSec}>${type}>no>no`;
+  return `read=${promptStr}=${paramName},no,${max},${min},${waitSec},${type},no,no`;
 }
 
 /**
@@ -237,7 +237,7 @@ function buildReadMenu(parts, paramName, opts = {}) {
  */
 function buildSilentRead(text) {
   const t = sanitizePart(text || 'טוען');
-  return `read^t-${t}^dummy>no>1>1>3>Digits>no>no`;
+  return `read=t-${t}=dummy,no,1,1,3,Digits,no,no`;
 }
 
 // ============================================================================
@@ -321,7 +321,7 @@ function buildResponse(readCmd, stateParams = {}) {
     const val = stateParams[key];
     if (val === undefined || val === null) continue;
     // פורמט ימות המשיח: *שם^ערך (לא &שם=ערך)
-    out += `*api_add_${key}^${val}`;
+    out += `&api_add_${key}=${val}`;
   }
   console.log(`[v0] buildResponse output: ${out.substring(0, 200)}`);
   return out;
@@ -674,10 +674,13 @@ module.exports = async (req, res) => {
 
     // ===== מסך תפריט ראשי =====
     if (currentScreen === 'main') {
-const readCmd = buildReadMenu([
-  'בדיקה',
-  'הקישו אחת'
-], 'mainsel', { waitSec: 20 });
+      const readCmd = buildReadMenu([
+        'ברוכים הבאים לפורום מתמחים טופ הטלפוני',
+        'לכניסה לפוסטים האחרונים הקישו 1',
+        'לשמיעת הנושאים האחרונים שנפתחו הקישו 2',
+        'לכניסה לפי קטגוריות הקישו 3',
+        'לחיפוש בפורום הקישו 4'
+      ], 'mainsel', { waitSec: 7 });
       return res.send(buildResponse(readCmd, { screen: 'main' }));
     }
 

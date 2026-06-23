@@ -47,7 +47,7 @@ console.log('PARAMS:', JSON.stringify(params));
 console.log(output);
 console.log('==================================');
 
-res.status(200).send(output.replace(/\n/g, ''));
+res.status(200).send(output);
   } catch (err) {
     console.error('IVR Error:', err);
     res.status(200).send(sayText('שגיאה, נסה שוב') + endCall());

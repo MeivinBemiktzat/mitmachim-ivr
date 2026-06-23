@@ -505,9 +505,9 @@ const menuParts = buildTopicListParts(
 );
 
 const topicIdsString = topics.map(t => t.tid).join(',');
-const readCommand = buildFastMenuRead('topicsel', 9, menuParts);
+const readCommand = buildFastMenuRead('recentsel', 9, menuParts);
 
-return res.send(`${readCommand}&api_add_tids=${topicIdsString}&api_add_screen=topics`);
+return res.send(`${readCommand}&api_add_tids=${topicIdsString}&api_add_screen=recent`);
     }
 
     // ===== מסך נושאים אחרונים שנפתחו =====
@@ -532,9 +532,9 @@ return res.send(`${readCommand}&api_add_tids=${topicIdsString}&api_add_screen=to
 );
 
 const topicIdsString = topics.map(t => t.tid).join(',');
-const readCommand = buildFastMenuRead('cattopicsel', 9, menuParts);
+const readCommand = buildFastMenuRead('topicsel', 9, menuParts);
 
-return res.send(`${readCommand}&api_add_tids=${topicIdsString}&api_add_screen=cattopics`);
+return res.send(`${readCommand}&api_add_tids=${topicIdsString}&api_add_screen=topics`);
     }
 
     // ===== מסך קטגוריות ראשיות ותתי-קטגוריות =====
@@ -566,8 +566,16 @@ return res.send(`${readCommand}&api_add_tids=${topicIdsString}&api_add_screen=ca
           readPrompt += ' או הקישו כוכבית לשמיעת הפוסטים בתוך קטגוריה זו';
         }
         
-        const readCommand = buildFastMenuRead('catsel', 9);
-        return res.send(`${audioList}&${readCommand}&api_add_cids=${categoryIdsString}&api_add_curcid=${cid}&api_add_screen=categories`);
+        const menuParts = buildCategoryListParts(categoriesList, headerText);
+
+const readCommand = buildFastMenuRead(
+  'catsel',
+  9,
+  menuParts
+);
+        return res.send(
+ `${readCommand}&api_add_cids=${categoryIdsString}&api_add_curcid=${cid}&api_add_screen=categories`
+);
       } else if (cid) {
         // אם אין תתי-קטגוריות, נעביר אוטומטית למסך השמעת הנושאים של קטגוריה זו בתוך ה-API
         return res.send(`api_add_screen=cattopics&api_add_cid=${cid}&read=t-מיד נטען את הנושאים=dummy,no,1,1,1,Digits,no,no`);
@@ -588,12 +596,23 @@ return res.send(`${readCommand}&api_add_tids=${topicIdsString}&api_add_screen=ca
       const data = await nbFetch('/category/' + cid);
       const topics = (data.topics || []).slice(0, 9);
       
-      const menuParts = buildCategoryListParts(categoriesList, headerText);
-const categoryIdsString = categoriesList.map(c => c.cid).join(',');
+const menuParts = buildTopicListParts(
+  topics,
+  'נושאים זמינים בקטגוריה.',
+  'לחזרה לתפריט הראשי הקישו אפס.'
+);
 
-const readCommand = buildFastMenuRead('catsel', 9, menuParts);
+const topicIdsString = topics.map(t => t.tid).join(',');
 
-return res.send(`${readCommand}&api_add_cids=${categoryIdsString}&api_add_curcid=${cid}&api_add_screen=categories`);
+const readCommand = buildFastMenuRead(
+  'cattopicsel',
+  9,
+  menuParts
+);
+
+return res.send(
+ `${readCommand}&api_add_tids=${topicIdsString}&api_add_screen=cattopics`
+);
     }
 
     // ===== מסך שמיעת נושא (השמעת פוסטים והודעות בצורה אינטראקטיבית) =====

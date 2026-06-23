@@ -317,6 +317,14 @@ if (queryData.api_add_tid) {
   queryData.tid = queryData.api_add_tid;
 }
 
+if (queryData.api_add_tids) {
+  queryData.api_add_tids = queryData.api_add_tids;
+}
+
+if (queryData.api_add_cids) {
+  queryData.api_add_cids = queryData.api_add_cids;
+}
+
 if (queryData.api_add_page) {
   queryData.page = queryData.api_add_page;
 }
@@ -366,7 +374,7 @@ if (queryData.api_add_cid) {
         currentScreen = 'recent';
       } else {
         const index = parseInt(selection, 10) - 1;
-        const topicIds = String(queryData.tids || '').split(',').filter(x => x);
+        const topicIds = String(queryData.api_add_tids || '').split('>').filter(x => x);
         
         if (!isNaN(index) && index >= 0 && index < topicIds.length) {
           // העברה ישירה למסך שמיעת הנושא בתוך אותו ה-API ללא שימוש ב-go_to_folder!
@@ -390,7 +398,7 @@ if (queryData.api_add_cid) {
         currentScreen = 'main';
       } else {
         const index = parseInt(selection, 10) - 1;
-        const topicIds = String(queryData.tids || '').split(',').filter(x => x);
+        const topicIds = String(queryData.api_add_tids || '').split('>').filter(x => x);
         
         if (!isNaN(index) && index >= 0 && index < topicIds.length) {
           return res.send(
@@ -416,7 +424,7 @@ if (queryData.api_add_cid) {
         return res.send(`read=t-טוען נושאים בקטגוריה=dummy,no,1,1,1,Digits,no,no&api_add_cid=${currentCid}&api_add_screen=cattopics`);
       } else {
         const index = parseInt(selection, 10) - 1;
-        const categoryIds = String(queryData.cids || '').split(',').filter(x => x);
+        const categoryIds = String(queryData.api_add_cids || '').split('>').filter(x => x);
         
         if (!isNaN(index) && index >= 0 && index < categoryIds.length) {
           // טעינת תת-קטגוריה או הצגת הנושאים שלה בתוך אותו ה-API
@@ -435,7 +443,7 @@ if (queryData.api_add_cid) {
         currentScreen = 'main';
       } else {
         const index = parseInt(selection, 10) - 1;
-        const topicIds = String(queryData.tids || '').split(',').filter(x => x);
+        const topicIds = String(queryData.api_add_tids || '').split('>').filter(x => x);
         
         if (!isNaN(index) && index >= 0 && index < topicIds.length) {
           return res.send(`read=t-טוען=dummy,no,1,1,1,Digits,no,no&api_add_tid=${topicIds[index]}&api_add_page=0&api_add_screen=topic`);

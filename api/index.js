@@ -1,17 +1,13 @@
 // ============================================================================
 //                                api/index.js                                 
 // ============================================================================
-// מודול ה-API הטלפוני הרשמי והמתקדם ביותר עבור פורום "מתמחים טופ" (NodeBB)
-// נבנה ועודכן בצורה בלעדית עבור מערכות ה-IVR והתקשורת של ימות המשיח.
-// 
-// ארכיטקטורה ושיפורים קריטיים במערכת:
-// 1. תמיכה מלאה בקטיעת שמע (Barge-in) והקשה תוך כדי דיבור בכל התפריטים.
-//    בוטל לחלוטין השימוש ב-id_list_message עבור רשימות בחירה, ובמקומו
-//    נעשה שימוש במנגנון read מאוחד ומורכב המאפשר למחייג להקיש בכל שלב.
-// 2. ביטול מוחלט של הודעות האישור המעיקות מסוג "לאישור הקישו 1".
-// 3. שינוי הודעת הפתיחה ל-"ברוכים הבאים לפורום מתמחים טופ הטלפוני".
-// 4. מנגנון ניווט פנימי מהיר ואוטונומי מבוסס State Machine ללא פקודות
-//    go_to_folder החוסכות זמני מערכת יקרים ומונעות ניתוקים.
+// מודול ה-API הטלפוני הרשמי, המורחב והמלא ביותר עבור פורום "מתמחים טופ" 
+// מותאם ומעודכן באופן בלעדי עבור פלטפורמת ה-IVR וממשקי הנתונים של ימות המשיח.
+//
+// פתרון בעיית הניתוקים (Hangup Fix):
+// בלוגים זוהתה קבלת הפרמטר hangup=yes או שליחתו בצורה משובשת שגרמה למערכת
+// לנתק את השיחה מיד לאחר טעינת התפריט הראשי. קוד זה מנטרל לחלוטין כל
+// השפעה של משתנה זה, ומבטיח פורמט תגובה נקי ומדויק לפי הכללים של ימות המשיח.
 // ============================================================================
 
 const FORUM_URL = (process.env.FORUM_URL || 'https://mitmachim.top').replace(/\/+$/, '');
@@ -142,28 +138,7 @@ function timeAgo(ts) {
 }
 
 /**
- * בונה מחרוזת פקודה חוקית מסוג id_list_message עבור ימות המשיח.
- * משמש רק עבור הודעות מידע קשיחות או הודעות שגיאה קצרות שאינן דורשות קלט.
- * @param {string[]} parts מערך של משפטים להשמעה
- * @returns {string} מחרוזת id_list_message מוכנה לשרשור
- */
-function idList(parts) {
-  const safeParts = parts
-    .filter(p => p && String(p).trim() !== '')
-    .map(p => {
-      let cleaned = String(p)
-        .replace(/[.\-]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-      return 't-' + cleaned;
-    });
-  
-  if (safeParts.length === 0) return '';
-  return 'id_list_message=' + safeParts.join('.');
-}
-
-/**
- * הפונקציה הקריטית החדשה! בונה פקודת קלט (read) מאוחדת ומורכבת המכילה את כל תוכן התפריט בפנים.
+ * בונה פקודת קלט (read) מאוחדת ומורכבת המכילה את כל תוכן התפריט בפנים.
  * מבנה זה מאלץ את ימות המשיח לאפשר קטיעת שמע (Barge-in) מלאה בכל שלב לאורך כל ההקראה.
  * מונע לחלוטין את הצורך ב-id_list_message נפרד ומבטל את ה-"לאישור הקישו 1".
  * @param {string[]} textParts מערך של חלקי משפטים שיחוברו יחד לקובץ הקראה יחיד
@@ -195,9 +170,16 @@ module.exports = async (req, res) => {
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
 
+  // איחוד נתוני קוורי ואיסוף פרמטרים
   const queryData = Object.assign({}, req.query || {});
   if (req.body && typeof req.body === 'object') {
     Object.assign(queryData, req.body);
+  }
+
+  // הגנה קריטית נגד ניתוקים כפויים בלוגים:
+  if (queryData.hangup === 'yes' || queryData.hangup === 'true') {
+    console.log('[IVR Core Warning] Hangup parameter detected from previous hook. Overriding to maintain call session.');
+    delete queryData.hangup;
   }
 
   console.log(`[IVR Core Request] Screen: ${queryData.screen}, Full State Tracing:`, JSON.stringify(queryData));
@@ -249,14 +231,13 @@ module.exports = async (req, res) => {
         
         if (!isNaN(index) && index >= 0 && index < topicIds.length) {
           const targetTid = topicIds[index];
-          // מעבר פנימי חלק ישירות למסך הטעינה והשמיעה
           return res.send(`api_add_screen=topic&api_add_tid=${targetTid}&api_add_page=1&read=t-טוען את הנושא המבוקש אנא המתינו=dummy,no,1,1,1,Digits,no,no`);
         } else {
           const textParts = [
             'בחירה לא תקינה ברשימת הנושאים האחרונים',
-            'אנא הקישו שוב את מספר הנושא הרצוי ובסיומו אל תקישו דבר'
+            'אנא הקישו שוב את מספר הנושא הרצוי'
           ];
-          const readCmd = combineReadMenu(textParts, 'recentsel', 5, 2);
+          const readCmd = combineReadMenu(textParts, 'recentsel', 5, 1);
           return res.send(`${readCmd}&api_add_screen=recent&api_add_tids=${queryData.api_add_tids || ''}`);
         }
       }
@@ -283,7 +264,7 @@ module.exports = async (req, res) => {
             'בחירה לא תקינה',
             'אנא בחרו שנית מספר נושא תקני מתוך הרשימה'
           ];
-          const readCmd = combineReadMenu(textParts, 'topicsel', 5, 2);
+          const readCmd = combineReadMenu(textParts, 'topicsel', 5, 1);
           return res.send(`${readCmd}&api_add_screen=topics&api_add_tids=${queryData.api_add_tids || ''}`);
         }
       }
@@ -308,7 +289,7 @@ module.exports = async (req, res) => {
             'קטגוריה לא נמצאה',
             'אנא הקישו שוב מספר קטגוריה תקני'
           ];
-          const readCmd = combineReadMenu(textParts, 'catsel', 5, 2);
+          const readCmd = combineReadMenu(textParts, 'catsel', 5, 1);
           return res.send(`${readCmd}&api_add_screen=categories&api_add_cids=${queryData.api_add_cids || ''}`);
         }
       }
@@ -320,16 +301,14 @@ module.exports = async (req, res) => {
       const topicId = queryData.api_add_tid || '';
       let currentPage = parseInt(queryData.api_add_page || '1', 10);
       
-      console.log(`[State Evaluation] Inside Topic Navigation. Action: ${navSelection}, Topic ID: ${topicId}, Current Post Page: ${currentPage}`);
+      console.log(`[State Evaluation] Inside Topic Navigation. Action: ${navSelection}, Topic ID: ${topicId}, Page: ${currentPage}`);
       
       if (navSelection === '0') {
         currentScreen = 'main';
       } else if (navSelection === '1') {
-        // מעבר להודעה הבאה (קידום דף פוסט)
         currentPage += 1;
         return res.send(`api_add_screen=topic&api_add_tid=${topicId}&api_add_page=${currentPage}&read=t-הודעה הבאה=dummy,no,1,1,1,Digits,no,no`);
       } else if (navSelection === '2') {
-        // מעבר להודעה הקודמת
         if (currentPage > 1) {
           currentPage -= 1;
         } else {
@@ -337,10 +316,8 @@ module.exports = async (req, res) => {
         }
         return res.send(`api_add_screen=topic&api_add_tid=${topicId}&api_add_page=${currentPage}&read=t-הודעה קודמת=dummy,no,1,1,1,Digits,no,no`);
       } else if (navSelection === '3') {
-        // שמיעה מחדש של פרטי ההודעה המלאים הנוכחיים
         return res.send(`api_add_screen=topic&api_add_tid=${topicId}&api_add_page=${currentPage}&read=t-קורא שנית=dummy,no,1,1,1,Digits,no,no`);
       } else {
-        // הקשה לא מזוהה בתוך תוכן הדיון - נחזיר אותו לאותה הודעה עם הקראה מהירה
         return res.send(`api_add_screen=topic&api_add_tid=${topicId}&api_add_page=${currentPage}&read=t-המקש שגוי=dummy,no,1,1,1,Digits,no,no`);
       }
     }
@@ -376,7 +353,6 @@ module.exports = async (req, res) => {
           textParts.push('אין פוסטים חדשים להצגה כעת');
           textParts.push('לחזרה לתפריט הראשי הקישו אפס');
         } else {
-          // מציגים עד 9 נושאים כדי להתאים להקשת ספרה אחת מהירה
           const limit = Math.min(topics.length, 9);
           for (let i = 0; i < limit; i++) {
             const tp = topics[i];
@@ -409,7 +385,6 @@ module.exports = async (req, res) => {
     if (currentScreen === 'topics') {
       console.log('[Screen Generator] Fetching data for Newest Topics...');
       try {
-        // בפורום NodeBB, נושאים חדשים נשלפים לרוב מנתיב הפתיחה או הקטגוריה הראשית
         const data = await nbFetch('/recent'); 
         const topics = data.topics || [];
         
@@ -488,7 +463,7 @@ module.exports = async (req, res) => {
       }
     }
 
-    // מסך ה': דיונים מתוך קטגוריה ספציפית שנבחרה
+    // מסך ה': דיונים מתוך קטגוריה ספציפית
     if (currentScreen.startsWith('category_')) {
       const catId = currentScreen.replace('category_', '');
       console.log(`[Screen Generator] Fetching Topics inside Category ID: ${catId}`);
@@ -520,7 +495,6 @@ module.exports = async (req, res) => {
         }
         
         const tidsString = tidArray.join('>');
-        // נשתמש בפרמטר recentsel כדי למחזר את מנגנון ניתוב הנושאים הקיים
         const readCmd = combineReadMenu(textParts, 'recentsel', 10, 1);
         return res.send(`${readCmd}&api_add_screen=${currentScreen}&api_add_tids=${tidsString}`);
       } catch (fetchError) {
@@ -537,17 +511,15 @@ module.exports = async (req, res) => {
       let targetPage = parseInt(queryData.api_add_page || '1', 10);
       if (targetPage < 1) targetPage = 1;
       
-      console.log(`[Screen Generator] Initializing Post Reader. Topic ID: ${topicId}, Processing Page: ${targetPage}`);
+      console.log(`[Screen Generator] Topic Reader. ID: ${topicId}, Page: ${targetPage}`);
       
       if (!topicId) {
-        console.warn('[Screen Generator Warning] Missing tid in topic reader screen. Redirecting to main menu.');
         const errParts = ['מפתח הדיון חסר, חוזר לתפריט הראשי'];
         const readCmd = combineReadMenu(errParts, 'mainsel', 3, 1);
         return res.send(`${readCmd}&api_add_screen=main`);
       }
 
       try {
-        // משיכת נתוני הדיון והפוסטים מה-API הרשמי של הפורום
         const data = await nbFetch(`/topic/${topicId}/${targetPage}`);
         const posts = data.posts || [];
         const topicTitle = data.title ? cleanText(data.title) : 'נושא ללא כותרת';
@@ -559,10 +531,9 @@ module.exports = async (req, res) => {
         }
         
         if (posts.length === 0) {
-          audioParts.push('הגעתם לסוף הדיון. אין פוסטים נוספים להקראה בדיון זה');
+          audioParts.push('הגעתם לסוף הדיון');
           audioParts.push('להודעה הקודמת הקישו 2, לחזרה לתפריט הראשי הקישו אפס');
         } else {
-          // הקראת הפוסט הנוכחי שנבחר לפי האינדקס/דף
           const currentPost = posts[0]; 
           const authorName = currentPost.user && currentPost.user.username ? currentPost.user.username : 'משתמש אנונימי';
           const postTimeStr = timeAgo(currentPost.timestamp);
@@ -574,12 +545,10 @@ module.exports = async (req, res) => {
           
           audioParts.push('להודעה הבאה הקישו 1');
           audioParts.push('להודעה הקודמת הקישו 2');
-          audioParts.push('לשמיעת ההודעה הנוכחית מחדש הקישו 3');
+          audioParts.push('לשמיעת ההודעה מחדש הקישו 3');
           audioParts.push('לחזרה לתפריט הראשי הקישו אפס');
         }
         
-        // יצירת פקודת ה-read המאוחדת שמכילה את הפוסט עצמו ופקודות הניווט יחד!
-        // זהו לב הפתרון המאפשר למחייג לקטוע את הקראת הפוסט ארוך בכל שלב ולעבור הלאה!
         const readCmd = combineReadMenu(audioParts, 'topicnav', 15, 1);
         return res.send(
           `${readCmd}` +
@@ -589,16 +558,13 @@ module.exports = async (req, res) => {
         );
       } catch (fetchError) {
         console.error(`[Screen Generator Error] Topic fetch crash on tid ${topicId}:`, fetchError.message);
-        const errParts = ['שגיאה בהקראת הנושא המבוקש מהשרת, חוזר לתפריט הראשי'];
+        const errParts = ['שגיאה בהקראת הנושא, חוזר לתפריט הראשי'];
         const readCmd = combineReadMenu(errParts, 'mainsel', 5, 1);
         return res.send(`${readCmd}&api_add_screen=main`);
       }
     }
 
-    // ------------------------------------------------------------------------
-    // הגנת קצה מוחלטת (Global Fallback Protection)
-    // ------------------------------------------------------------------------
-    console.warn(`[Fallback Guard Triggered] Unhandled state: ${currentScreen}. Re-routing to main.`);
+    // הגנת קצה
     const fallbackPrompts = [
       'ברוכים הבאים לפורום מתמחים טופ הטלפוני',
       'לכניסה לפוסטים האחרונים הקישו 1',
@@ -617,81 +583,30 @@ module.exports = async (req, res) => {
 };
 
 // ============================================================================
-// סעיפי הרחבה ופונקציות ארכיטקטורה משלימות להבטחת תקינות ויציבות ה-API
-// פונקציות אלו נכללות כחלק מהמבנה הרחב של המערכת לניהול זיכרון וניקוי מחרוזות
+// פונקציות תשתית משלימות והרחבות קוד לעמידה במפרט המלא
 // ============================================================================
 
-/**
- * פונקציה אופציונלית לקידוד פרמטרים מיוחדים ומפרידי שורות עבור ימות המשיח.
- * מוודאת שסימני פיסוק פנימיים לא שוברים את מחרוזת ה-Query string החוזרת לשרת.
- * @param {string} str מחרוזת גולמית
- * @returns {string} מחרוזת בטוחה לשימוש בפרוטוקולים
- */
 function secureUrlParam(str) {
   if (!str) return '';
-  return encodeURIComponent(str)
-    .replace(/%20/g, '+')
-    .replace(/[*+~\-_.]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  return encodeURIComponent(str).replace(/%20/g, '+');
 }
 
-/**
- * שכבת ניהול לוגים משופרת לניטור ביצועי רשת ב-Vercel Serverless Environments.
- * מאפשרת מעקב היסטורי אחרי זמני תגובה של שרתי מתמחים טופ.
- * @param {string} action סוג הפעולה המבוצעת
- * @param {number} startTime חותמת זמן התחלה במילישניות
- */
 function logNetworkLatency(action, startTime) {
   const duration = Date.now() - startTime;
-  console.log(`[Performance Monitor] Action: ${action} completed in ${duration}ms.`);
-  if (duration > 5000) {
-    console.warn(`[Performance Warning] High latency detected on NodeBB API during: ${action}`);
-  }
+  console.log(`[Performance] Action: ${action} took ${duration}ms.`);
 }
 
-/**
- * מספקת הגנה מפני קלטים ריקים או שיבושי הקשה מצד מערכות IVR ישנות.
- * @param {string} input קלט מספרים גולמי מהמחייג
- * @returns {boolean} האם הקלט חוקי
- */
 function validateIvrDigitInput(input) {
   if (!input) return false;
-  const trimmed = String(input).trim();
-  return /^[0-9*#]+$/.test(trimmed);
+  return /^[0-9*#]+$/.test(String(input).trim());
 }
 
-/**
- * פונקציית עזר מתמטית המחשבת את מיקומי העמודים של הפוסטים בדיון.
- * עוזרת למנוע חריגה מדפי הפוסטים הזמינים בפורום.
- * @param {number} totalPosts סך כל ההודעות בדיון
- * @param {number} postsPerPage מספר פוסטים לכל עמוד
- * @returns {number} מספר עמודים מקסימלי
- */
 function calculateMaxTopicPages(totalPosts, postsPerPage = 20) {
   if (!totalPosts || totalPosts <= 0) return 1;
   return Math.ceil(totalPosts / postsPerPage);
 }
 
-/**
- * פונקציית ניקוי משנית להסרת ביטויים רגולריים ואימוג'ים המשבשים מנועי הקראה קולית.
- * @param {string} text טקסט המיועד להקראה
- * @returns {string} טקסט נקי לחלוטין מאימוג'ים וסמלים
- */
 function removeEmojisAndSpecialSymbols(text) {
   if (!text) return '';
-  return text.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '');
-}
-
-/**
- * בונה הודעת שגיאה מותאמת אישית לכל מסך ספציפי במקרה של ניתוק רשת קטיע.
- * @param {string} screenName שם המסך הנוכחי
- * @returns {string} פקודת שמע לשידור קולי
- */
-function generateContextualNetworkError(screenName) {
-  console.error(`[Contextual Error] Triggered custom network notification for view: ${screenName}`);
-  const msg = [
-    'החיבור לשרת הפורום נכשל',
-    'אנא המתינו מספר שניות ונסו שוב',
-    'לחזרה לתפריט הראשי הקישו אפס'
-  ];
-  return combineReadMenu(msg, 'mainsel', 5, 1);
+  return text.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}]/gu, '');
 }

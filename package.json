@@ -1,0 +1,12 @@
+{
+  "name": "ivr-nodebb-bridge",
+  "version": "1.0.0",
+  "main": "api/index.js",
+  "scripts": {
+    "start": "node api/index.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "express": "^4.19.0"
+  }
+}

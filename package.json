@@ -1,12 +1,16 @@
 {
-  "name": "ivr-nodebb-bridge",
+  "name": "nodebb-ivr",
   "version": "1.0.0",
+  "description": "מודול IVR לפורום NodeBB - מתמחים טופ",
   "main": "api/index.js",
+  "engines": {
+    "node": ">=18.x"
+  },
   "scripts": {
-    "start": "node api/index.js"
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
   },
   "dependencies": {
-    "axios": "^1.6.0",
-    "express": "^4.19.0"
+    "node-fetch": "^3.3.2"
   }
 }

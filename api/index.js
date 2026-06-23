@@ -126,10 +126,10 @@ const apiHandler = async (req, res) => {
   console.log(`[State Tracker] Phone: ${params.ApiPhone || 'Private'}, Screen State: ${params.screen || 'main'}`);
 
   // בדיקת ניתוק שיחה מוקדם למניעת עיבוד מיותר בשרת
-  if (params.hangup === 'yes' || params.ApiHangupExtension) {
-    console.log(`[Hangup Event] Call ${params.ApiCallId} terminated by user.`);
-    return res.status(200).send('hangup=yes');
-  }
+  if (params.hangup === 'yes') {
+  console.log(`[Hangup Event] Call ${params.ApiCallId} terminated by user.`);
+  return res.status(200).send('hangup=yes');
+}
 
   const currentScreen = params.screen || 'main';
 

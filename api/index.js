@@ -27,24 +27,31 @@ function parseDate(timestamp) {
 app.get('/api', async (req, res) => {
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
 
-    // קריאת הפרמטרים מימות המשיח
-    const step = req.query.step || 'main_menu'; // הצעד הנוכחי במערכת
+    // זיהוי הצעד הנוכחי: בודק קודם כל אם קיבלנו step ב-query, 
+    // ואם לא קיבלנו step אבל המשתמש הקיש משהו בתפריט הראשי - נדע לעבור לעיבוד שלו.
+    let step = req.query.step || 'main_menu'; 
     const userInput = req.query.ApiEnter || req.query.selection; // המקש שהמשתמש הקיש
     
+    // אם הגענו ללא step מוגדר אבל עם קלט מהתפריט הראשי (לפי הלוג שלך)
+    if (step === 'main_menu' && userInput) {
+        step = 'process_main';
+    }
+
     // פרמטרי ניווט עמוקים (נשמרים בתוך ה-URL של השלב הבא)
     const currentCid = req.query.cid; // מזהה קטגוריה נוכחית
-    const currentTid = req.query.tid; // mזהה אשכול/נושא נוכחי
+    const currentTid = req.query.tid; // מזהה אשכול/נושא נוכחי
     const postIndex = parseInt(req.query.p_idx) || 0; // אינדקס הפוסט הנוכחי באשכול
 
     try {
         // ==========================================
-// 1. תפריט ראשי - מתוקן ללא תווים מיוחדים
-// ==========================================
-if (step === 'main_menu') {
-    // הוסר התו < והוחלף בפסיק רגיל או בנקודה
-    let menuTts = 'לתפריט קטגוריות הקישו 1. לשמיעת נושאים אחרונים שנפתחו הקישו 2. לשמיעת פוסטים אחרונים בפורום הקישו 3.';
-    return res.send(`read=t-${menuTts}=ApiEnter,yes,1,1,1,3,Number&step=process_main`);
-}
+        // 1. תפריט ראשי
+        // ==========================================
+        if (step === 'main_menu') {
+            let menuTts = 'לתפריט קטגוריות הקישו 1. לשמיעת נושאים אחרונים שנפתחו הקישו 2. לשמיעת פוסטים אחרונים בפורום הקישו 3.';
+            // תיקון קריטי: בימות המשיח לא משרשרים &step=... אחרי ה-read בצורה חופשית. 
+            // המערכת תחזור אוטומטית לאותו URL, והתנאי למעלה (if step === 'main_menu' && userInput) יתפוס את זה כ-process_main.
+            return res.send(`read=t-${menuTts}=ApiEnter,yes,1,1,1,3,Number`);
+        }
 
         if (step === 'process_main') {
             if (userInput === '1') { // מעבר לקטגוריות ראשיות
@@ -56,33 +63,29 @@ if (step === 'main_menu') {
             if (userInput === '3') { // פוסטים אחרונים בפורום
                 return res.send(`go_to_api=yes&step=recent_posts`);
             }
-            return res.send(`go_to_api=yes&step=main_menu`); // בחירה שגויה - חזרה לתפריט
+            // בחירה שגויה - חזרה לתפריט
+            return res.send(`go_to_api=yes&step=main_menu`); 
         }
 
         // ==========================================
         // 2. תפריט קטגוריות (ותתי קטגוריות)
         // ==========================================
         if (step === 'categories') {
-            // שליפת מבנה הקטגוריות של NodeBB
             const response = await axios.get(`${FORUM_URL}/api/categories`);
             let categories = response.data.categories || [];
 
             // סינון קטגוריות לפי האם אנחנו בשורש (cid=0) או בתוך קטגוריית אב
             if (currentCid && currentCid !== '0') {
                 const parentId = parseInt(currentCid);
-                // מוצאים את תתי הקטגוריות שה-parent שלהן הוא ה-cid הנוכחי
                 categories = categories.filter(c => c.parentCid === parentId);
             } else {
-                // קטגוריות ראשיות בלבד (אין להן אב)
                 categories = categories.filter(c => !c.parentCid || c.parentCid === 0);
             }
 
             if (categories.length === 0) {
-                // אם אין תתי קטגוריות, ננסה להציג ישירות את הנושאים שבתוך הקטגוריה הזו
                 return res.send(`go_to_api=yes&step=category_topics&cid=${currentCid}`);
             }
 
-            // לוקחים מקסימום 7 קטגוריות להשמעה נוחה בטלפון
             const items = categories.slice(0, 7);
             let tts = `בחרת קטגוריות. `;
             items.forEach((cat, index) => {
@@ -90,9 +93,19 @@ if (step === 'main_menu') {
             });
             tts += 'לחזרה לתפריט הראשי, הקישו 9.';
 
-            // שמירת המזהים של הקטגוריות שהושמעו כדי לדעת למי לשלוח בשלב הבא
             const idsMapping = items.map(c => c.cid).join(',');
-            return res.send(`read=t-${tts}=ApiEnter,yes,1,1,1,9,Number&step=process_category&cid=${currentCid}&cat_map=${idsMapping}`);
+            // תיקון: מעבירים את ה-step הבא בתוך ה-URL דרך פקודת הקישור החוזרת במידת הצורך, 
+            // או שנסמוך על שליחת הפרמטרים החוזרים. בימות המשיח הדרך הטובה ביותר לעקוב אחרי משתנים דינמיים ב-read היא לשרשר אותם כפרמטרים קבועים בשלוחה, 
+            // או לשלוח go_to_api מיד אחרי קבלת הנתונים. כאן נחזיר את ה-read נקי.
+            return res.send(`read=t-${tts}=ApiEnter,yes,1,1,1,9,Number`);
+        }
+
+        // לוגיקה חכמה לזיהוי שלבים מתקדמים שמגיעים מפקודת read ללא תלות בשרשור ה-URL:
+        if (req.query.cat_map && userInput) {
+            step = 'process_category';
+        } else if (req.query.tids_map && userInput && step === 'main_menu') {
+            // אם יש מפת נושאים והיוזר הקיש משהו, כנראה הוא הגיע מעיבוד נושאים
+            step = req.query.cid ? 'process_topics' : 'process_recent_topics';
         }
 
         if (step === 'process_category') {
@@ -106,7 +119,6 @@ if (step === 'main_menu') {
             }
 
             const nextCid = catMap[selectedIdx];
-            // מעבר לבדיקה האם יש תתי קטגוריות או נושאים בתוך הקטגוריה שנבחרה
             return res.send(`go_to_api=yes&step=category_decision&cid=${nextCid}`);
         }
 
@@ -116,10 +128,8 @@ if (step === 'main_menu') {
             const children = response.data.children || [];
             
             if (children.length > 0) {
-                // יש תתי קטגוריות - נשמיע אותן
                 return res.send(`go_to_api=yes&step=categories&cid=${currentCid}`);
             } else {
-                // אין תתי קטגוריות - נשמיע את הנושאים שבפנים
                 return res.send(`go_to_api=yes&step=category_topics&cid=${currentCid}`);
             }
         }
@@ -141,7 +151,7 @@ if (step === 'main_menu') {
             tts += 'לחזרה, הקישו 9.';
 
             const tidsMapping = items.map(t => t.tid).join(',');
-            return res.send(`read=t-${tts}=ApiEnter,yes,1,1,1,9,Number&step=process_topics&tids_map=${tidsMapping}&cid=${currentCid}`);
+            return res.send(`read=t-${tts}=ApiEnter,yes,1,1,1,9,Number`);
         }
 
         if (step === 'process_topics') {
@@ -171,12 +181,12 @@ if (step === 'main_menu') {
             tts += 'לרענון ועדכון רשימה זו, הקישו 8. לחזרה לתפריט, הקישו 9.';
 
             const tidsMapping = topics.map(t => t.tid).join(',');
-            return res.send(`read=t-${tts}=ApiEnter,yes,1,1,1,9,Number&step=process_recent_topics&tids_map=${tidsMapping}`);
+            return res.send(`read=t-${tts}=ApiEnter,yes,1,1,1,9,Number`);
         }
 
         if (step === 'process_recent_topics') {
             if (userInput === '9') return res.send(`go_to_api=yes&step=main_menu`);
-            if (userInput === '8') return res.send(`go_to_api=yes&step=recent_topics`); // רענון מחדש
+            if (userInput === '8') return res.send(`go_to_api=yes&step=recent_topics`); 
 
             const tidsMap = (req.query.tids_map || '').split(',');
             const selectedIdx = parseInt(userInput) - 1;
@@ -186,6 +196,11 @@ if (step === 'main_menu') {
             }
 
             return res.send(`go_to_api=yes&step=read_topic&tid=${tidsMap[selectedIdx]}&p_idx=0`);
+        }
+
+        // התאמה חכמה נוספת עבור הפוסטים האחרונים שמגיעים מ-read
+        if (step === 'main_menu' && req.query.p_idx !== undefined && userInput) {
+            step = 'process_recent_posts';
         }
 
         // ==========================================
@@ -199,7 +214,6 @@ if (step === 'main_menu') {
                 return res.send(`say_tts=אין פוסטים אחרונים. חזרה לתפריט.&go_to_api=yes&step=main_menu`);
             }
 
-            // השמעת הפוסט הנוכחי מתוך רשימת האחרונים
             const post = posts[postIndex];
             const cleanContent = cleanText(post.content);
             const author = post.user ? post.user.username : 'משתמש מהפורום';
@@ -208,27 +222,31 @@ if (step === 'main_menu') {
             let tts = `פוסט מתוך הנושא: ${topicTitle}. נכתב על ידי ${author}. תוכן הפוסט: ${cleanContent}. `;
             tts += 'לפוסט הבא, הקישו 6. לפוסט הקודם, הקישו 4. לשמיעת פרטי הפוסט המלאים, הקישו 5. לרענון רשימת הפוסטים מההתחלה, הקישו 8. לחזרה לתפריט, הקישו 9.';
 
-            return res.send(`read=t-${tts}=ApiEnter,yes,1,1,1,9,Number&step=process_recent_posts&p_idx=${postIndex}&tid=${post.tid}`);
+            return res.send(`read=t-${tts}=ApiEnter,yes,1,1,1,9,Number`);
         }
 
         if (step === 'process_recent_posts') {
             if (userInput === '9') return res.send(`go_to_api=yes&step=main_menu`);
-            if (userInput === '8') return res.send(`go_to_api=yes&step=recent_posts&p_idx=0`); // רענון מההתחלה
+            if (userInput === '8') return res.send(`go_to_api=yes&step=recent_posts&p_idx=0`); 
             
-            // שמיעת פרטים מלאים על הפוסט האחרון
             if (userInput === '5') {
                 return res.send(`go_to_api=yes&step=post_metadata&tid=${currentTid}&p_idx=${postIndex}&back_to=recent_posts`);
             }
 
             let nextIdx = postIndex;
-            if (userInput === '6') nextIdx = postIndex + 1; // קדימה
-            if (userInput === '4') nextIdx = Math.max(0, postIndex - 1); // אחורה
+            if (userInput === '6') nextIdx = postIndex + 1; 
+            if (userInput === '4') nextIdx = Math.max(0, postIndex - 1); 
 
             return res.send(`go_to_api=yes&step=recent_posts&p_idx=${nextIdx}`);
         }
 
+        // התאמה חכמה עבור קריאת אשכול ספציפי שמגיע מ-read
+        if (step === 'main_menu' && currentTid && userInput) {
+            step = 'process_read_topic';
+        }
+
         // ==========================================
-        // 5. קריאת אשכול/נושא ספציפי (השמעת הודעות רציפה)
+        // 5. קריאת אשכול/נושא ספציפי
         // ==========================================
         if (step === 'read_topic') {
             const response = await axios.get(`${FORUM_URL}/api/topic/${currentTid}`);
@@ -246,13 +264,12 @@ if (step === 'main_menu') {
             let tts = `הודעה מספר ${postIndex + 1} באשכול ${topicTitle}. מאת ${author}: ${cleanContent}. `;
             tts += 'להודעה הבאה, הקישו 6. להודעה הקודמת, הקישו 4. לשמיעת פרטי הודעה זו, הקישו 5. לחזרה לתפריט, הקישו 9.';
 
-            return res.send(`read=t-${tts}=ApiEnter,yes,1,1,1,9,Number&step=process_read_topic&tid=${currentTid}&p_idx=${postIndex}`);
+            return res.send(`read=t-${tts}=ApiEnter,yes,1,1,1,9,Number`);
         }
 
         if (step === 'process_read_topic') {
             if (userInput === '9') return res.send(`go_to_api=yes&step=main_menu`);
             
-            // שמיעת פרטי פוסט בתוך אשכול
             if (userInput === '5') {
                 return res.send(`go_to_api=yes&step=post_metadata&tid=${currentTid}&p_idx=${postIndex}&back_to=read_topic`);
             }
@@ -295,10 +312,10 @@ if (step === 'main_menu') {
             }
             metaTts += 'לחזרה להשמעת הפוסט, הקישו מקש כלשהו או המתינו.';
 
-            return res.send(`read=t-${metaTts}=ApiEnter,yes,1,1,1,,Number&step=return_from_meta&back_to=${backTo}&tid=${currentTid}&p_idx=${postIndex}`);
+            return res.send(`read=t-${metaTts}=ApiEnter,yes,1,1,1,,Number`);
         }
 
-        if (step === 'return_from_meta') {
+        if (step === 'return_from_meta' || (req.query.back_to && userInput)) {
             const backTo = req.query.back_to || 'main_menu';
             return res.send(`go_to_api=yes&step=${backTo}&tid=${currentTid}&p_idx=${postIndex}`);
         }

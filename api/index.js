@@ -41,19 +41,18 @@ function splitIds(raw) {
 }
 
 /**
- * *** תיקון הבאג השורש ***
+ * *** קריאת state מהבקשה ***
  *
- * ימות המשיח שומר משתנה state בשם api_add_tids ושולח אותו חזרה
- * בשם api_add_tids (לא tids!). לכן כשקוראים tids צריך לבדוק
- * BOTH שמות: q['api_add_tids'] וגם q.tids (לתאימות לאחור).
+ * אחרי שהשרת שלח *key^value בתגובה, ימות המשיח מחזיר אותו
+ * בבקשה הבאה כ- key^value שמגיע ל-Express כ- q.key = value.
+ * לתאימות לאחור, בודקים גם את api_add_key.
  *
  * @param {Object} q אובייקט הפרמטרים הנכנסים
- * @param {string} key שם המשתנה (ללא api_add_)
+ * @param {string} key שם המשתנה
  * @returns {string} הערך שנמצא
  */
 function getState(q, key) {
-  // ימות המשיח מחזיר api_add_X בשם api_add_X (לא X)
-  return q['api_add_' + key] || q[key] || '';
+  return q[key] || q['api_add_' + key] || '';
 }
 
 // ============================================================================
@@ -208,10 +207,15 @@ function sanitizePart(part) {
 /**
  * בונה פקודת read שמשמיעה את ה-prompt ובו זמנית קולטת הקשה (barge-in).
  *
+ * פורמט ימות המשיח:
+ *   read^AUDIO_TEXT^VARNAME>reuseExisting>maxDigits>minDigits>timeout>displayType>blockStar>blockZero
+ *
+ * ה-^ מפריד בין חלקי הפקודה, ה-> מפריד בין פרמטרי השדה.
+ *
  * @param {string[]} parts מערך משפטים
  * @param {string} paramName שם משתנה החזרה
  * @param {Object} opts { min, max, waitSec, type }
- * @returns {string} פקודת read
+ * @returns {string} פקודת read בפרוטוקול ימות המשיח
  */
 function buildReadMenu(parts, paramName, opts = {}) {
   const min     = opts.min     !== undefined ? opts.min     : 1;
@@ -224,15 +228,17 @@ function buildReadMenu(parts, paramName, opts = {}) {
     .map(p => 't-' + sanitizePart(p))
     .join('.');
 
-  return `read=${promptStr}=${paramName},no,${min},${max},${waitSec},${type},no,no`;
+  // פורמט ימות המשיח: read^PROMPT^VARNAME>reuseExisting>maxDigits>minDigits>timeout>type>blockStar>blockZero
+  return `read^${promptStr}^${paramName}>no>${max}>${min}>${waitSec}>${type}>no>no`;
 }
 
 /**
- * בונה read "שקט" קצר למעברים פנימיים.
+ * בונה read "שקט" קצר למעברים פנימיים (dummy field, timeout קצר).
+ * reuseExisting=no, maxDigits=1, minDigits=1, timeout=1
  */
 function buildSilentRead(text) {
   const t = sanitizePart(text || 'טוען');
-  return `read=t-${t}=dummy,no,1,1,1,Digits,no,no`;
+  return `read^t-${t}^dummy>no>1>1>1>Digits>no>no`;
 }
 
 // ============================================================================
@@ -294,16 +300,31 @@ function buildCategoryListParts(cats, headerText) {
 // ============================================================================
 
 /**
- * *** חשוב: שומר api_add_* עם מפריד > בין ערכים ***
- * ימות המשיח ישמור את הערכים בצורה זו ויחזיר אותם עם > כמפריד.
- * לכן נשתמש ב-> בתוך הערכים שאנו שולחים כדי לשמור עקביות.
+ * *** תיקון הבאג השורש של הפרוטוקול ***
+ *
+ * פרוטוקול ימות המשיח (ApiAnswer) משתמש ב:
+ *   - ^ כמפריד בין שם פרמטר לערך (במקום =)
+ *   - * כמפריד בין פרמטרים שונים (במקום &)
+ *
+ * כדי לשמור state בין בקשות, יש להחזיר פקודת read עם שדות נוספים
+ * בפורמט: read=PROMPT=VARNAME,params*STATEVAR^VALUE*STATEVAR2^VALUE2
+ *
+ * שדות state שמוגדרים כך מוחזרים על ידי ימות המשיח בבקשה הבאה
+ * בפורמט: STATEVAR^VALUE (כלומר STATEVAR=VALUE בתוך ה-query).
+ *
+ * @param {string} readCmd פקודת ה-read הבסיסית
+ * @param {Object} stateParams שדות state לשמירה
+ * @returns {string} תגובה מלאה בפרוטוקול ימות המשיח
  */
 function buildResponse(readCmd, stateParams = {}) {
   let out = readCmd;
   for (const key in stateParams) {
-    if (stateParams[key] === undefined || stateParams[key] === null) continue;
-    out += `&api_add_${key}=${stateParams[key]}`;
+    const val = stateParams[key];
+    if (val === undefined || val === null) continue;
+    // פורמט ימות המשיח: *שם^ערך (לא &שם=ערך)
+    out += `*${key}^${val}`;
   }
+  console.log(`[v0] buildResponse output: ${out.substring(0, 200)}`);
   return out;
 }
 
@@ -326,6 +347,7 @@ module.exports = async (req, res) => {
   }
 
   console.log(`[IVR Request] Screen: ${q.screen}, Full Query:`, JSON.stringify(q));
+  console.log(`[v0] tids=${q.tids || ''}, cids=${q.cids || ''}, tid=${q.tid || ''}, page=${q.page || ''}`);
 
   let currentScreen = q.screen || 'main';
 

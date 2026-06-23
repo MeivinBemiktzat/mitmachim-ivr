@@ -9,7 +9,6 @@
 // ============================================================================
 
 const express = require('express');
-const fetch = require('node-fetch');
 
 const app = express();
 
@@ -298,7 +297,7 @@ async function handleUnreadTopics(params, res) {
   const currentPage = parseInt(params.page || '1', 10);
   const topicSelection = params.topic_sel;
 
-  const forumData = await fetchFromForum(`unread?page=${currentPage}`);
+  let forumData = await fetchFromForum(`unread?page=${currentPage}`);
   if (!forumData || !forumData.topics || forumData.topics.length === 0) {
     // פולבק במקרה והמשתמש מחובר כאורח ואין רשימת unread מותאמת אישית - נמשוך נושאים פופולריים
     console.log('[Unread Fallback] No unread topics found, pulling popular topics instead.');

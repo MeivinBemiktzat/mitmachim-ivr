@@ -176,9 +176,19 @@ function idList(parts) {
  * @param {number} waitSec זמן המתנה למקש בשניות (ברירת מחדל 7)
  * @returns {string} פקודת read משורשרת התואמת לתפריט פנימי מהיר
  */
-function buildFastMenuRead(paramName, waitSec = 7) {
-  // הגדרת אורך מינימלי 1, מקסימום 1, ללא תווים מיוחדים, סוג ספרות, ללא בקשת קוד אישור קולי (no בסוף)
-  return `read=t- אנא הקישו בחירה=${paramName},no,1,1,${waitSec},Digits,no,no`;
+function buildFastMenuRead(paramName, waitSec = 7, parts = []) {
+  const cleanedParts = parts
+    .filter(p => p && String(p).trim() !== '')
+    .map(p => {
+      return 't-' + String(p)
+        .replace(/[.\-]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    });
+
+  cleanedParts.push('t-אנא הקישו בחירה');
+
+  return `read=${cleanedParts.join('.')}=${paramName},no,1,1,${waitSec},Digits,no,no`;
 }
 
 function buildInteractiveRead(paramName, parts, waitSec = 7) {
@@ -488,16 +498,16 @@ module.exports = async (req, res) => {
       const data = await nbFetch('/recent');
       const topics = (data.topics || []).slice(0, 9); // לוקחים מקסימום 9 נושאים כדי שיתאימו למקשים 1-9
       
-      const audioList = idList(buildTopicListParts(
-        topics,
-        'הפוסטים האחרונים בפורום.',
-        'לרענון רשימה זו הקישו כוכבית. לחזרה לתפריט הראשי הקישו אפס.'
-      ));
-      
-      const topicIdsString = topics.map(t => t.tid).join(',');
-      const readCommand = buildFastMenuRead('recentsel', 9);
-      
-      return res.send(`${audioList}&${readCommand}&api_add_tids=${topicIdsString}&api_add_screen=recent`);
+const menuParts = buildTopicListParts(
+  topics,
+  'הנושאים החדשים ביותר שנפתחו בפורום.',
+  'לחזרה לתפריט הראשי הקישו אפס בכל עת.'
+);
+
+const topicIdsString = topics.map(t => t.tid).join(',');
+const readCommand = buildFastMenuRead('topicsel', 9, menuParts);
+
+return res.send(`${readCommand}&api_add_tids=${topicIdsString}&api_add_screen=topics`);
     }
 
     // ===== מסך נושאים אחרונים שנפתחו =====
@@ -515,16 +525,16 @@ module.exports = async (req, res) => {
       // סידור הנושאים לפי חותמת הזמן של יצירתם בסדר יורד
       topics = topics.slice().sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0)).slice(0, 9);
       
-      const audioList = idList(buildTopicListParts(
-        topics,
-        'הנושאים החדשים ביותר שנפתחו בפורום.',
-        'לחזרה לתפריט הראשי הקישו אפס בכל עת.'
-      ));
-      
-      const topicIdsString = topics.map(t => t.tid).join(',');
-      const readCommand = buildFastMenuRead('topicsel', 9);
-      
-      return res.send(`${audioList}&${readCommand}&api_add_tids=${topicIdsString}&api_add_screen=topics`);
+      const menuParts = buildTopicListParts(
+  topics,
+  'נושאים זמינים בקטגוריית ' + cleanText(data.name || '') + '.',
+  'לחזרה לתפריט הראשי הקישו אפס.'
+);
+
+const topicIdsString = topics.map(t => t.tid).join(',');
+const readCommand = buildFastMenuRead('cattopicsel', 9, menuParts);
+
+return res.send(`${readCommand}&api_add_tids=${topicIdsString}&api_add_screen=cattopics`);
     }
 
     // ===== מסך קטגוריות ראשיות ותתי-קטגוריות =====
@@ -578,16 +588,12 @@ module.exports = async (req, res) => {
       const data = await nbFetch('/category/' + cid);
       const topics = (data.topics || []).slice(0, 9);
       
-      const audioList = idList(buildTopicListParts(
-        topics,
-        'נושאים זמינים בקטגוריית ' + cleanText(data.name || '') + '.',
-        'לחזרה לתפריט הראשי הקישו אפס.'
-      ));
-      
-      const topicIdsString = topics.map(t => t.tid).join(',');
-      const readCommand = buildFastMenuRead('cattopicsel', 9);
-      
-      return res.send(`${audioList}&${readCommand}&api_add_tids=${topicIdsString}&api_add_screen=cattopics`);
+      const menuParts = buildCategoryListParts(categoriesList, headerText);
+const categoryIdsString = categoriesList.map(c => c.cid).join(',');
+
+const readCommand = buildFastMenuRead('catsel', 9, menuParts);
+
+return res.send(`${readCommand}&api_add_cids=${categoryIdsString}&api_add_curcid=${cid}&api_add_screen=categories`);
     }
 
     // ===== מסך שמיעת נושא (השמעת פוסטים והודעות בצורה אינטראקטיבית) =====

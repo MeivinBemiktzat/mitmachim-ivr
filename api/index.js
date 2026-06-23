@@ -2,7 +2,7 @@
 // מודול API טלפוני לפורום NodeBB עבור מערכת IVR של ימות המשיח
 // =============================================================
 
-const FORUM_URL = (process.env.FORUM_URL || 'https://f2.freeivr.co.il').replace(/\/+$/, '');
+const FORUM_URL = (process.env.FORUM_URL || 'https://mitmachim.top').replace(/\/+$/, '');
 const MAX_TITLE_CHARS = 300;   // הגבלת אורך טקסט לקריאת TTS
 const MAX_BODY_CHARS  = 950;   // הגבלת אורך גוף הודעה ל-TTS (מקסימום ~1000)
 
@@ -66,7 +66,6 @@ function timeAgo(ts) {
 
 // בניית מחרוזת id_list_message מתוך פריטי טקסט (t-...) מופרדים בנקודה
 function idList(parts) {
-  // כל איבר: ננקה נקודות וקווים שמשמשים מפרידים פנימיים בימות
   const safe = parts
     .filter(p => p && String(p).trim() !== '')
     .map(p => 't-' + String(p).replace(/[.\-]/g, ' ').replace(/\s+/g, ' ').trim());
@@ -74,25 +73,19 @@ function idList(parts) {
 }
 
 // תשובת read לימות: השמעת הודעה + קבלת הקשה מהמשתמש
+// הגדרת ברירת מחדל של מקסימום תו 1 ומינימום תו 1 כדי למנוע את בקשת האישור ("לאישור הקישו 1")
 function readResp(sayText, paramName, opts) {
   opts = opts || {};
   const min = opts.min || 1;
-  const maxd = opts.max || 4;
+  const maxd = opts.max || 1; // שונה ל-1 כברירת מחדל לתפריטים מהירים
   const wait = opts.wait || 7;
   const say = cleanText(sayText).replace(/[.\-]/g, ' ');
-  // חלק שני: שם פרמטר,שימוש בקיים,מקס,מין,המתנה,Digits,חסימת כוכבית,חסימת אפס,החלפת מקש
   return 'read=t-' + say + '=' + paramName + ',no,' + maxd + ',' + min + ',' + wait + ',Digits,no,yes';
 }
 
 // תשובת go_to_folder
 function goFolder(path) {
   return 'go_to_folder=' + path;
-}
-
-// פיצול ערך api_extension (השלוחה הנוכחית) לקבלת ההקשר
-function parseExt(ext) {
-  if (!ext) return [];
-  return String(ext).split('/').filter(x => x !== '');
 }
 
 // ---------- בניית מסכי השמעה ----------
@@ -144,10 +137,18 @@ module.exports = async (req, res) => {
   const q = Object.assign({}, req.query || {});
   if (req.body && typeof req.body === 'object') Object.assign(q, req.body);
 
-  // מסך = איזה מסך אנחנו מציגים כעת (מנוהל דרך api_add)
   const screen = q.screen || 'main';
 
   try {
+    // תיקון לופ תפריט ראשי: בודקים קודם כל אם חזרה תשובה מהתפריט הראשי!
+    if (q.mainsel !== undefined) {
+      const s = String(q.mainsel);
+      if (s === '1') return res.send(goFolder('recent') + '&api_add_screen=recent');
+      if (s === '2') return res.send(goFolder('topics') + '&api_add_screen=topics');
+      if (s === '3') return res.send(goFolder('categories') + '&api_add_screen=categories');
+      // בחירה לא חוקית - נציג שוב את התפריט הראשי
+    }
+
     // ============ תפריט ראשי ============
     if (screen === 'main') {
       const say =
@@ -155,55 +156,43 @@ module.exports = async (req, res) => {
         't-לכניסה לפוסטים האחרונים הקישו 1.' +
         't-לשמיעת הנושאים האחרונים שנפתחו הקישו 2.' +
         't-לכניסה לפי קטגוריות הקישו 3' +
-        '&read=t-אנא הקישו את בחירתכם=mainsel,no,1,1,7,Digits,no,yes';
+        '&read=t-אנא הקישו את בחירתכם=mainsel,no,1,1,7,Digits,no,yes' +
+        '&api_add_screen=main'; // אבטחת הגדרת המסך הבא
       return res.send(say);
-    }
-
-    // ניתוב לפי בחירת התפריט הראשי
-    if (q.mainsel !== undefined && screen === 'mainsel') {
-      const s = String(q.mainsel);
-      if (s === '1') return res.send(goFolder('recent'));
-      if (s === '2') return res.send(goFolder('topics'));
-      if (s === '3') return res.send(goFolder('categories'));
-      return res.send(goFolder('.')); // בחירה לא חוקית - חזרה
     }
 
     // ============ פוסטים אחרונים (תגובות אחרונות בכל הפורום) ============
     if (screen === 'recent') {
       const data = await nbFetch('/recent');
       const topics = (data.topics || []).slice(0, 9);
-      // ב-recent כל "topic" כולל את הפוסט/תגובה האחרונה
       const out = buildTopicList(
         topics,
         'הפוסטים האחרונים בפורום',
         'לרענון הרשימה הקישו כוכבית, לחזרה לתפריט הראשי הקישו אפס'
       );
-      // נשמור את רשימת ה-tids לשלב הבא
       const tids = topics.map(t => t.tid).join(',');
+      // שונה ל-1,1 כדי למנוע בקשת אישור
       const sel = '&read=t-אנא הקישו את מספר הנושא לשמיעה=recentsel,no,1,1,9,Digits,no,no' +
-                  '&api_add_tids=' + tids;
+                  '&api_add_tids=' + tids + '&api_add_screen=recentsel';
       return res.send(out + sel);
     }
 
     if (screen === 'recentsel') {
       const s = String(q.recentsel || '');
-      if (s === '0') return res.send(goFolder('/'));
-      if (s === '' ) return res.send(goFolder('recent'));
+      if (s === '0') return res.send(goFolder('/') + '&api_add_screen=main');
+      if (s === '' ) return res.send(goFolder('recent') + '&api_add_screen=recent');
       const tids = String(q.tids || '').split(',').filter(x => x);
       const idx = parseInt(s, 10) - 1;
-      if (idx < 0 || idx >= tids.length) return res.send(goFolder('recent'));
-      return res.send('go_to_folder=topic&api_add_tid=' + tids[idx]);
+      if (idx < 0 || idx >= tids.length) return res.send(goFolder('recent') + '&api_add_screen=recent');
+      return res.send('go_to_folder=topic&api_add_tid=' + tids[idx] + '&api_add_screen=topic');
     }
 
     // ============ נושאים אחרונים שנפתחו ============
-    // ב-NodeBB /api/recent מסודר לפי פעילות. לנושאים חדשים נשתמש בפרמטר.
     if (screen === 'topics') {
-      // נסיון לקבל נושאים מסודרים לפי תאריך יצירה
       let data;
       try { data = await nbFetch('/recent?term=alltime&sort=newest'); }
       catch (e) { data = await nbFetch('/recent'); }
       let topics = (data.topics || []);
-      // מיון לפי זמן יצירת הנושא (timestamp) מהחדש לישן
       topics = topics.slice().sort((a, b) =>
         (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0)
       ).slice(0, 9);
@@ -213,18 +202,19 @@ module.exports = async (req, res) => {
         'לחזרה לתפריט הראשי הקישו אפס'
       );
       const tids = topics.map(t => t.tid).join(',');
+      // שונה ל-1,1 כדי למנוע בקשת אישור
       const sel = '&read=t-אנא הקישו את מספר הנושא לשמיעה=topicsel,no,1,1,9,Digits,no,no' +
-                  '&api_add_tids=' + tids;
+                  '&api_add_tids=' + tids + '&api_add_screen=topicsel';
       return res.send(out + sel);
     }
 
     if (screen === 'topicsel') {
       const s = String(q.topicsel || '');
-      if (s === '0' || s === '') return res.send(goFolder('/'));
+      if (s === '0' || s === '') return res.send(goFolder('/') + '&api_add_screen=main');
       const tids = String(q.tids || '').split(',').filter(x => x);
       const idx = parseInt(s, 10) - 1;
-      if (idx < 0 || idx >= tids.length) return res.send(goFolder('topics'));
-      return res.send('go_to_folder=topic&api_add_tid=' + tids[idx]);
+      if (idx < 0 || idx >= tids.length) return res.send(goFolder('topics') + '&api_add_screen=topics');
+      return res.send('go_to_folder=topic&api_add_tid=' + tids[idx] + '&api_add_screen=topic');
     }
 
     // ============ קטגוריות ותתי-קטגוריות ============
@@ -233,12 +223,10 @@ module.exports = async (req, res) => {
       let cats = [];
       let header = '';
       if (!cid) {
-        // קטגוריות ראשיות
         const data = await nbFetch('/categories');
         cats = (data.categories || []).filter(c => !c.disabled).slice(0, 9);
         header = 'תפריט קטגוריות';
       } else {
-        // תתי-קטגוריות + נושאים של קטגוריה
         const data = await nbFetch('/category/' + cid);
         cats = (data.children || []).filter(c => !c.disabled).slice(0, 9);
         header = 'קטגוריה ' + cleanText(data.name || '');
@@ -250,34 +238,32 @@ module.exports = async (req, res) => {
         let sel = '&read=t-לבחירת קטגוריה הקישו את מספרה';
         if (cid) sel += ' לשמיעת הנושאים שבקטגוריה זו הקישו כוכבית';
         sel += '. לחזרה לתפריט הראשי הקישו אפס=catsel,no,1,1,9,Digits,no,no' +
-               '&api_add_cids=' + cids + '&api_add_curcid=' + (cid || '');
+               '&api_add_cids=' + cids + '&api_add_curcid=' + (cid || '') + '&api_add_screen=catsel';
         return res.send(out + sel);
       } else if (cid) {
-        // אין תתי-קטגוריות - נציג נושאים ישירות
-        return res.send('go_to_folder=cattopics&api_add_cid=' + cid);
+        return res.send('go_to_folder=cattopics&api_add_cid=' + cid + '&api_add_screen=cattopics');
       } else {
-        return res.send(idList(['לא נמצאו קטגוריות']) + '&go_to_folder=/');
+        return res.send(idList(['לא נמצאו קטגוריות']) + '&go_to_folder=/&api_add_screen=main');
       }
     }
 
     if (screen === 'catsel') {
       const s = String(q.catsel || '');
       const curcid = String(q.curcid || '');
-      if (s === '0') return res.send(goFolder('/'));
-      // כוכבית מטופל בימות (חסימה) - לכן נשתמש במקש לשמיעת נושאים אם בקטגוריה
-      if (s === '' && curcid) return res.send('go_to_folder=cattopics&api_add_cid=' + curcid);
+      if (s === '0') return res.send(goFolder('/') + '&api_add_screen=main');
+      if (s === '' && curcid) return res.send('go_to_folder=cattopics&api_add_cid=' + curcid + '&api_add_screen=cattopics');
       const cids = String(q.cids || '').split(',').filter(x => x);
       const idx = parseInt(s, 10) - 1;
       if (idx < 0 || idx >= cids.length) {
-        return res.send('go_to_folder=categories' + (curcid ? '&api_add_cid=' + curcid : ''));
+        return res.send('go_to_folder=categories' + (curcid ? '&api_add_cid=' + curcid : '') + '&api_add_screen=categories');
       }
-      return res.send('go_to_folder=categories&api_add_cid=' + cids[idx]);
+      return res.send('go_to_folder=categories&api_add_cid=' + cids[idx] + '&api_add_screen=categories');
     }
 
     // ============ נושאים בתוך קטגוריה ============
     if (screen === 'cattopics') {
       const cid = String(q.cid || '');
-      if (!cid) return res.send(goFolder('/'));
+      if (!cid) return res.send(goFolder('/') + '&api_add_screen=main');
       const data = await nbFetch('/category/' + cid);
       const topics = (data.topics || []).slice(0, 9);
       const out = buildTopicList(
@@ -287,35 +273,33 @@ module.exports = async (req, res) => {
       );
       const tids = topics.map(t => t.tid).join(',');
       const sel = '&read=t-אנא הקישו את מספר הנושא לשמיעה=cattopicsel,no,1,1,9,Digits,no,no' +
-                  '&api_add_tids=' + tids;
+                  '&api_add_tids=' + tids + '&api_add_screen=cattopicsel';
       return res.send(out + sel);
     }
 
     if (screen === 'cattopicsel') {
       const s = String(q.cattopicsel || '');
-      if (s === '0' || s === '') return res.send(goFolder('/'));
+      if (s === '0' || s === '') return res.send(goFolder('/') + '&api_add_screen=main');
       const tids = String(q.tids || '').split(',').filter(x => x);
       const idx = parseInt(s, 10) - 1;
-      if (idx < 0 || idx >= tids.length) return res.send(goFolder('/'));
-      return res.send('go_to_folder=topic&api_add_tid=' + tids[idx]);
+      if (idx < 0 || idx >= tids.length) return res.send(goFolder('/') + '&api_add_screen=main');
+      return res.send('go_to_folder=topic&api_add_tid=' + tids[idx] + '&api_add_screen=topic');
     }
 
     // ============ שמיעת נושא (פוסטים) ============
     if (screen === 'topic') {
       const tid = String(q.tid || '');
-      if (!tid) return res.send(goFolder('/'));
-      const page = parseInt(q.page || '0', 10); // אינדקס פוסט התחלתי
+      if (!tid) return res.send(goFolder('/') + '&api_add_screen=main');
+      const page = parseInt(q.page || '0', 10);
       const data = await nbFetch('/topic/' + tid);
       const posts = data.posts || [];
       const title = ttsCut(data.title, MAX_TITLE_CHARS);
 
-      // נשמיע פוסט אחד בכל פעם (page = אינדקס בתוך המערך)
       if (page >= posts.length) {
-        // נגמרו הפוסטים
         return res.send(
           idList(['סוף הנושא', 'לחזרה לתפריט הראשי הקישו אפס']) +
           '&read=t-להאזנה מההתחלה הקישו 1, לחזרה לתפריט הראשי הקישו 0=topicend,no,1,1,7,Digits,no,no' +
-          '&api_add_tid=' + tid
+          '&api_add_tid=' + tid + '&api_add_screen=topicend'
         );
       }
 
@@ -328,13 +312,11 @@ module.exports = async (req, res) => {
       parts.push('מאת ' + author);
       parts.push(body);
 
-      // נשמור פרטים לשמיעת "פרטי הפוסט" ולניווט
       const detailParts = [
         'פרטי ההודעה',
         'נכתב על ידי ' + author,
         'בזמן ' + timeAgo(p.timestamp)
       ];
-      // אם זו תגובה למישהו
       if (p.toPid && data.posts) {
         const parent = data.posts.find(x => String(x.pid) === String(p.toPid));
         if (parent && parent.user) detailParts.push('בתגובה ל ' + parent.user.username);
@@ -346,6 +328,7 @@ module.exports = async (req, res) => {
         'לחזרה לתפריט הראשי הקישו 0=topicnav,no,1,1,15,Digits,no,no' +
         '&api_add_tid=' + tid +
         '&api_add_page=' + page +
+        '&api_add_screen=topicnav' +
         '&api_add_details=' + encodeURIComponent(detailParts.join('|'));
 
       return res.send(idList(parts) + menu);
@@ -356,46 +339,42 @@ module.exports = async (req, res) => {
       const tid = String(q.tid || '');
       const page = parseInt(q.page || '0', 10);
       const s = String(q.topicnav || '');
-      if (s === '0') return res.send(goFolder('/'));
-      if (s === '1') return res.send('go_to_folder=topic&api_add_tid=' + tid + '&api_add_page=' + (page + 1));
+      if (s === '0') return res.send(goFolder('/') + '&api_add_screen=main');
+      if (s === '1') return res.send('go_to_folder=topic&api_add_tid=' + tid + '&api_add_page=' + (page + 1) + '&api_add_screen=topic');
       if (s === '2') {
         const prev = page - 1 < 0 ? 0 : page - 1;
-        return res.send('go_to_folder=topic&api_add_tid=' + tid + '&api_add_page=' + prev);
+        return res.send('go_to_folder=topic&api_add_tid=' + tid + '&api_add_page=' + prev + '&api_add_screen=topic');
       }
       if (s === '3') {
-        // שמיעת פרטי ההודעה ואז חזרה לאותה הודעה
         const details = decodeURIComponent(q.details || '').split('|').filter(x => x);
         return res.send(
           idList(details) +
           '&read=t-לחזרה להודעה הקישו 1=detback,no,1,1,7,Digits,no,no' +
-          '&api_add_tid=' + tid + '&api_add_page=' + page
+          '&api_add_tid=' + tid + '&api_add_page=' + page + '&api_add_screen=detback'
         );
       }
-      // ברירת מחדל - חזרה לאותה הודעה
-      return res.send('go_to_folder=topic&api_add_tid=' + tid + '&api_add_page=' + page);
+      return res.send('go_to_folder=topic&api_add_tid=' + tid + '&api_add_page=' + page + '&api_add_screen=topic');
     }
 
     if (screen === 'detback') {
       const tid = String(q.tid || '');
       const page = parseInt(q.page || '0', 10);
-      return res.send('go_to_folder=topic&api_add_tid=' + tid + '&api_add_page=' + page);
+      return res.send('go_to_folder=topic&api_add_tid=' + tid + '&api_add_page=' + page + '&api_add_screen=topic');
     }
 
     if (screen === 'topicend') {
       const tid = String(q.tid || '');
       const s = String(q.topicend || '');
-      if (s === '1') return res.send('go_to_folder=topic&api_add_tid=' + tid + '&api_add_page=0');
-      return res.send(goFolder('/'));
+      if (s === '1') return res.send('go_to_folder=topic&api_add_tid=' + tid + '&api_add_page=0' + '&api_add_screen=topic');
+      return res.send(goFolder('/') + '&api_add_screen=main');
     }
 
-    // ברירת מחדל
-    return res.send(goFolder('/'));
+    return res.send(goFolder('/') + '&api_add_screen=main');
 
   } catch (err) {
-    // שגיאה - הודעה למשתמש וחזרה לתפריט הראשי
     return res.send(
       idList(['אירעה שגיאה בטעינת הנתונים מהפורום', 'אנא נסו שוב מאוחר יותר']) +
-      '&go_to_folder=/'
+      '&go_to_folder=/&api_add_screen=main'
     );
   }
 };

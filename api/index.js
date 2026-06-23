@@ -218,18 +218,17 @@ function sanitizePart(part) {
  * @returns {string} פקודת read בפרוטוקול ימות המשיח
  */
 function buildReadMenu(parts, paramName, opts = {}) {
-  const min     = opts.min     !== undefined ? opts.min     : 1;
-  const max     = opts.max     !== undefined ? opts.max     : 1;
-  const waitSec = opts.waitSec !== undefined ? opts.waitSec : 7;
-  const type    = opts.type    || 'Digits';
+  const min     = opts.min ?? 1;
+  const max     = opts.max ?? 1;
+  const waitSec = opts.waitSec ?? 7;
+  const type    = opts.type || 'Digits';
 
   const promptStr = parts
-    .filter(p => p && String(p).trim() !== '')
+    .filter(p => p && String(p).trim())
     .map(p => 't-' + sanitizePart(p))
     .join('.');
 
-  // פורמט ימות המשיח: read^PROMPT^VARNAME>reuseExisting>maxDigits>minDigits>timeout>type>blockStar>blockZero
-  return `read^${promptStr}^${paramName}>no>${max}>${min}>${waitSec}>${type}>>>>>>>>>no`;
+  return `read^${promptStr}^${paramName}>no>${max}>${min}>${waitSec}>${type}>no>no`;
 }
 
 /**
@@ -238,7 +237,7 @@ function buildReadMenu(parts, paramName, opts = {}) {
  */
 function buildSilentRead(text) {
   const t = sanitizePart(text || 'טוען');
-  return `read^t-${t}^dummy>no>1>1>1>Digits>no>no`;
+  return `read^t-${t}^dummy>no>1>1>3>Digits>no>no`;
 }
 
 // ============================================================================
@@ -322,7 +321,7 @@ function buildResponse(readCmd, stateParams = {}) {
     const val = stateParams[key];
     if (val === undefined || val === null) continue;
     // פורמט ימות המשיח: *שם^ערך (לא &שם=ערך)
-    out += `*${key}^${val}`;
+    out += `*api_add_${key}^${val}`;
   }
   console.log(`[v0] buildResponse output: ${out.substring(0, 200)}`);
   return out;
@@ -346,10 +345,16 @@ module.exports = async (req, res) => {
     Object.assign(q, req.body);
   }
 
-  console.log(`[IVR Request] Screen: ${q.screen}, Full Query:`, JSON.stringify(q));
+  console.log(
+  `[IVR Request] Screen: ${q.screen || q.api_add_screen}, Full Query:`,
+  JSON.stringify(q)
+);
   console.log(`[v0] tids=${q.tids || ''}, cids=${q.cids || ''}, tid=${q.tid || ''}, page=${q.page || ''}`);
 
-  let currentScreen = q.screen || 'main';
+  let currentScreen =
+  q.screen ||
+  q.api_add_screen ||
+  'main';
 
   try {
 

@@ -122,6 +122,10 @@ const apiHandler = async (req, res) => {
   // פתרון באג ה-POST/GET: מאחדים את כל הפרמטרים הנכנסים תחת אובייקט אחד קבוע!
   const params = { ...req.query, ...req.body };
 
+  console.log('QUERY:', req.query);
+console.log('BODY:', req.body);
+console.log('HEADERS:', req.headers);
+console.log('RAW PARAMS:', params);
   console.log(`[Incoming Request] Method: ${req.method}, CallId: ${params.ApiCallId || 'Unknown'}`);
   console.log(`[State Tracker] Phone: ${params.ApiPhone || 'Private'}, Screen State: ${params.screen || 'main'}`);
 

@@ -14,6 +14,10 @@ module.exports = async (req, res) => {
     ? { ...req.query, ...(req.body || {}) }
     : { ...req.query };
 
+  console.log('QUERY:', JSON.stringify(req.query));
+console.log('BODY:', JSON.stringify(req.body));
+console.log('PARAMS:', JSON.stringify(params));
+
   const ctx = {
     pressed:     params.ApiDtmf || '',
     step:        params.step || 'main',

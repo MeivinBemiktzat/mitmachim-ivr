@@ -1,332 +1,262 @@
-const express = require('express');
-const axios = require('axios');
-const app = express();
+/**
+ * מודול IVR לפורום NodeBB - מתמחים טופ
+ * Vercel Serverless Function
+ */
 
-const FORUM_URL = 'https://mitmachim.top'; // שנה לכתובת הפורום שלך במידת הצורך
+const { fetchRecentPosts, fetchRecentTopics, fetchCategories, fetchTopicPosts, fetchPostDetails, fetchTopicDetails } = require('../lib/nodebb');
+const { sayText, sayMenu, askWithState, endCall } = require('../lib/yemot');
 
-// פונקציית עזר לניקוי תגיות HTML ו-Markdown מהטקסט
-function cleanText(text) {
-    if (!text) return '';
-    return text
-        .replace(/<[^>]*>/g, '') // הסרת HTML
-        .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // השארת טקסט הקישור
-        .replace(/[*_~`#\-]/g, '') // הסרת סימני עיצוב Markdown
-        .replace(/&quot;/g, '"') // המרת מרכאות
-        .replace(/&amp;/g, '&')
-        .replace(/\s+/g, ' ')
-        .trim();
+module.exports = async (req, res) => {
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+
+  const params = req.method === 'POST'
+    ? { ...req.query, ...(req.body || {}) }
+    : { ...req.query };
+
+  const ctx = {
+    pressed:     params.ApiDtmf || '',
+    step:        params.step || 'main',
+    index:       parseInt(params.index || '0', 10),
+    topicId:     params.topicId || '',
+    categoryId:  params.categoryId || '',
+    parentCatId: params.parentCatId || '',
+    postId:      params.postId || '',
+  };
+
+  try {
+    let output = '';
+    switch (ctx.step) {
+      case 'main':          output = buildMainMenu(ctx); break;
+      case 'recent_posts':  output = await handleRecentPosts(ctx); break;
+      case 'recent_topics': output = await handleRecentTopics(ctx); break;
+      case 'categories':    output = await handleCategories(ctx); break;
+      case 'topic_posts':   output = await handleTopicPosts(ctx); break;
+      case 'post_details':  output = await handlePostDetails(ctx); break;
+      case 'topic_details': output = await handleTopicDetails(ctx); break;
+      default:              output = buildMainMenu({ ...ctx, pressed: '' });
+    }
+    res.status(200).send(output);
+  } catch (err) {
+    console.error('IVR Error:', err);
+    res.status(200).send(sayText('שגיאה, נסה שוב') + endCall());
+  }
+};
+
+/* ========= תפריט ראשי ========= */
+
+function buildMainMenu(ctx) {
+  switch (ctx.pressed) {
+    case '1': return askWithState('recent_posts',  { index: 0 }, ctx);
+    case '2': return askWithState('recent_topics', { index: 0 }, ctx);
+    case '3': return askWithState('categories',    { index: 0 }, ctx);
+    case '0': return sayText('להתראות') + endCall();
+    default:
+      return (
+        sayText('ברוכים הבאים לפורום מתמחים טופ') +
+        sayMenu(['1 פוסטים אחרונים', '2 נושאים אחרונים', '3 קטגוריות', '0 ניתוק'],
+                'main', {}, ctx)
+      );
+  }
 }
 
-// פונקציה להמרת תאריך ידידותי מפורמט ה-Timestamp של הפורום
-function parseDate(timestamp) {
-    if (!timestamp) return 'תאריך לא ידוע';
-    const date = new Date(timestamp);
-    return `${date.getDate()}/${date.getMonth() + 1}/${date.getFullYear()}`;
+/* ========= פוסטים אחרונים ========= */
+
+async function handleRecentPosts(ctx) {
+  const { pressed, index } = ctx;
+  const posts = await fetchRecentPosts(20);
+  if (!posts.length) return sayText('לא נמצאו פוסטים') + askWithState('main', {}, ctx);
+
+  const i = pressed === '5' ? 0
+          : pressed === '6' ? Math.min(index + 1, posts.length - 1)
+          : pressed === '4' ? Math.max(index - 1, 0)
+          : index;
+
+  if (pressed === '8') return askWithState('post_details', { postId: String(posts[i]?.pid || '') }, ctx);
+  if (pressed === '9') return askWithState('main', {}, ctx);
+
+  const p = posts[i];
+  const text = cleanHtml(p.content || '').substring(0, 280);
+  return (
+    sayText(`פוסט ${i + 1} מתוך ${posts.length}`) +
+    sayText(text) +
+    sayMenu(['6 פוסט הבא', '4 פוסט קודם', '8 פרטי הפוסט', '5 ראש הרשימה', '9 תפריט ראשי'],
+            'recent_posts', { index: i }, ctx)
+  );
 }
 
-app.get('/api', async (req, res) => {
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+/* ========= נושאים אחרונים ========= */
 
-    // זיהוי הצעד הנוכחי: בודק קודם כל אם קיבלנו step ב-query, 
-    // ואם לא קיבלנו step אבל המשתמש הקיש משהו בתפריט הראשי - נדע לעבור לעיבוד שלו.
-    let step = req.query.step || 'main_menu'; 
-    const userInput = req.query.ApiEnter || req.query.selection; // המקש שהמשתמש הקיש
-    
-    // אם הגענו ללא step מוגדר אבל עם קלט מהתפריט הראשי (לפי הלוג שלך)
-    if (step === 'main_menu' && userInput) {
-        step = 'process_main';
-    }
+async function handleRecentTopics(ctx) {
+  const { pressed, index } = ctx;
+  const topics = await fetchRecentTopics(20);
+  if (!topics.length) return sayText('לא נמצאו נושאים') + askWithState('main', {}, ctx);
 
-    // פרמטרי ניווט עמוקים (נשמרים בתוך ה-URL של השלב הבא)
-    const currentCid = req.query.cid; // מזהה קטגוריה נוכחית
-    const currentTid = req.query.tid; // מזהה אשכול/נושא נוכחי
-    const postIndex = parseInt(req.query.p_idx) || 0; // אינדקס הפוסט הנוכחי באשכול
+  const i = pressed === '5' ? 0
+          : pressed === '6' ? Math.min(index + 1, topics.length - 1)
+          : pressed === '4' ? Math.max(index - 1, 0)
+          : index;
 
-    try {
-        // ==========================================
-        // 1. תפריט ראשי
-        // ==========================================
-        if (step === 'main_menu') {
-            let menuTts = 'לתפריט קטגוריות הקישו 1. לשמיעת נושאים אחרונים שנפתחו הקישו 2. לשמיעת פוסטים אחרונים בפורום הקישו 3.';
-            // תיקון קריטי: בימות המשיח לא משרשרים &step=... אחרי ה-read בצורה חופשית. 
-            // המערכת תחזור אוטומטית לאותו URL, והתנאי למעלה (if step === 'main_menu' && userInput) יתפוס את זה כ-process_main.
-            return res.send(`read=t-${menuTts}=ApiEnter,yes,1,1,1,3,Number`);
-        }
+  if (pressed === '1') return askWithState('topic_posts', { topicId: String(topics[i]?.tid || ''), index: 0 }, ctx);
+  if (pressed === '8') return askWithState('topic_details', { topicId: String(topics[i]?.tid || '') }, ctx);
+  if (pressed === '9') return askWithState('main', {}, ctx);
 
-        if (step === 'process_main') {
-            if (userInput === '1') { // מעבר לקטגוריות ראשיות
-                return res.send(`go_to_api=yes&step=categories&cid=0`);
-            }
-            if (userInput === '2') { // נושאים אחרונים שנפתחו
-                return res.send(`go_to_api=yes&step=recent_topics`);
-            }
-            if (userInput === '3') { // פוסטים אחרונים בפורום
-                return res.send(`go_to_api=yes&step=recent_posts`);
-            }
-            // בחירה שגויה - חזרה לתפריט
-            return res.send(`go_to_api=yes&step=main_menu`); 
-        }
+  const t = topics[i];
+  return (
+    sayText(`נושא ${i + 1} מתוך ${topics.length}`) +
+    sayText(t.title || 'ללא כותרת') +
+    sayText(`${t.postcount || 0} תגובות`) +
+    sayMenu(['1 כנס לפוסטים', '6 נושא הבא', '4 נושא קודם', '8 פרטי הנושא', '5 ראש הרשימה', '9 תפריט ראשי'],
+            'recent_topics', { index: i }, ctx)
+  );
+}
 
-        // ==========================================
-        // 2. תפריט קטגוריות (ותתי קטגוריות)
-        // ==========================================
-        if (step === 'categories') {
-            const response = await axios.get(`${FORUM_URL}/api/categories`);
-            let categories = response.data.categories || [];
+/* ========= קטגוריות ========= */
 
-            // סינון קטגוריות לפי האם אנחנו בשורש (cid=0) או בתוך קטגוריית אב
-            if (currentCid && currentCid !== '0') {
-                const parentId = parseInt(currentCid);
-                categories = categories.filter(c => c.parentCid === parentId);
-            } else {
-                categories = categories.filter(c => !c.parentCid || c.parentCid === 0);
-            }
+async function handleCategories(ctx) {
+  const { pressed, categoryId, parentCatId, index } = ctx;
 
-            if (categories.length === 0) {
-                return res.send(`go_to_api=yes&step=category_topics&cid=${currentCid}`);
-            }
+  if (categoryId) {
+    // אנחנו בתוך קטגוריה, הצג נושאים
+    const topics = await fetchRecentTopics(20, categoryId);
+    if (!topics.length) return sayText('אין נושאים') + askWithState('categories', { index: 0 }, ctx);
 
-            const items = categories.slice(0, 7);
-            let tts = `בחרת קטגוריות. `;
-            items.forEach((cat, index) => {
-                tts += `ל${cat.name}, הקישו ${index + 1}. `;
-            });
-            tts += 'לחזרה לתפריט הראשי, הקישו 9.';
+    const i = pressed === '6' ? Math.min(index + 1, topics.length - 1)
+            : pressed === '4' ? Math.max(index - 1, 0)
+            : index;
 
-            const idsMapping = items.map(c => c.cid).join(',');
-            // תיקון: מעבירים את ה-step הבא בתוך ה-URL דרך פקודת הקישור החוזרת במידת הצורך, 
-            // או שנסמוך על שליחת הפרמטרים החוזרים. בימות המשיח הדרך הטובה ביותר לעקוב אחרי משתנים דינמיים ב-read היא לשרשר אותם כפרמטרים קבועים בשלוחה, 
-            // או לשלוח go_to_api מיד אחרי קבלת הנתונים. כאן נחזיר את ה-read נקי.
-            return res.send(`read=t-${tts}=ApiEnter,yes,1,1,1,9,Number`);
-        }
+    if (pressed === '1') return askWithState('topic_posts', { topicId: String(topics[i]?.tid || ''), index: 0 }, ctx);
+    if (pressed === '8') return askWithState('topic_details', { topicId: String(topics[i]?.tid || '') }, ctx);
+    if (pressed === '7') return askWithState('categories', { index: 0 }, ctx);
+    if (pressed === '9') return askWithState('main', {}, ctx);
 
-        // לוגיקה חכמה לזיהוי שלבים מתקדמים שמגיעים מפקודת read ללא תלות בשרשור ה-URL:
-        if (req.query.cat_map && userInput) {
-            step = 'process_category';
-        } else if (req.query.tids_map && userInput && step === 'main_menu') {
-            // אם יש מפת נושאים והיוזר הקיש משהו, כנראה הוא הגיע מעיבוד נושאים
-            step = req.query.cid ? 'process_topics' : 'process_recent_topics';
-        }
+    const t = topics[i];
+    return (
+      sayText(`נושא ${i + 1} מתוך ${topics.length}`) +
+      sayText(t.title || 'ללא כותרת') +
+      sayText(`${t.postcount || 0} תגובות`) +
+      sayMenu(['1 האזן לפוסטים', '6 נושא הבא', '4 נושא קודם', '8 פרטי הנושא', '7 חזרה לקטגוריות', '9 תפריט ראשי'],
+              'categories', { categoryId, index: i }, ctx)
+    );
+  }
 
-        if (step === 'process_category') {
-            if (userInput === '9') return res.send(`go_to_api=yes&step=main_menu`);
-            
-            const catMap = (req.query.cat_map || '').split(',');
-            const selectedIdx = parseInt(userInput) - 1;
-            
-            if (isNaN(selectedIdx) || selectedIdx < 0 || selectedIdx >= catMap.length) {
-                return res.send(`say_tts=בחירה שגויה. חזרה לתפריט הקודם.&go_to_api=yes&step=categories&cid=${currentCid}`);
-            }
+  // רשימת קטגוריות
+  const cats = await fetchCategories(parentCatId || null);
+  if (!cats.length) return sayText('אין קטגוריות') + askWithState('main', {}, ctx);
 
-            const nextCid = catMap[selectedIdx];
-            return res.send(`go_to_api=yes&step=category_decision&cid=${nextCid}`);
-        }
+  const i = pressed === '6' ? Math.min(index + 1, cats.length - 1)
+          : pressed === '4' ? Math.max(index - 1, 0)
+          : index;
 
-        // שלב ביניים שמחליט האם להציג תת קטגוריה או להציג נושאים
-        if (step === 'category_decision') {
-            const response = await axios.get(`${FORUM_URL}/api/category/${currentCid}`);
-            const children = response.data.children || [];
-            
-            if (children.length > 0) {
-                return res.send(`go_to_api=yes&step=categories&cid=${currentCid}`);
-            } else {
-                return res.send(`go_to_api=yes&step=category_topics&cid=${currentCid}`);
-            }
-        }
+  if (pressed === '1') {
+    const cat = cats[i];
+    if (cat.children && cat.children.length > 0)
+      return askWithState('categories', { parentCatId: String(cat.cid), index: 0 }, ctx);
+    return askWithState('categories', { categoryId: String(cat.cid), index: 0 }, ctx);
+  }
+  if (pressed === '7') return askWithState('categories', { index: 0 }, ctx);
+  if (pressed === '9') return askWithState('main', {}, ctx);
 
-        // נושאים בתוך קטגוריה ספציפית
-        if (step === 'category_topics') {
-            const response = await axios.get(`${FORUM_URL}/api/category/${currentCid}`);
-            const topics = response.data.topics || [];
+  const cat = cats[i];
+  const hasChildren = cat.children && cat.children.length > 0;
+  const opts = [
+    `1 ${hasChildren ? 'תת קטגוריות' : 'נושאים בקטגוריה'}`,
+    '6 קטגוריה הבאה',
+    '4 קטגוריה קודמת',
+    ...(parentCatId ? ['7 חזרה לקטגוריות ראשיות'] : []),
+    '9 תפריט ראשי',
+  ];
 
-            if (topics.length === 0) {
-                return res.send(`say_tts=אין נושאים בקטגוריה זו. חזרה לתפריט הראשי.&go_to_api=yes&step=main_menu`);
-            }
+  return (
+    sayText(`קטגוריה ${i + 1} מתוך ${cats.length}`) +
+    sayText(cat.name || 'ללא שם') +
+    (cat.topic_count ? sayText(`${cat.topic_count} נושאים`) : '') +
+    sayMenu(opts, 'categories', { index: i, parentCatId: parentCatId || '' }, ctx)
+  );
+}
 
-            const items = topics.slice(0, 5);
-            let tts = 'הנושאים בקטגוריה זו הם: ';
-            items.forEach((t, index) => {
-                tts += `לנושא ${index + 1}: ${t.title}. `;
-            });
-            tts += 'לחזרה, הקישו 9.';
+/* ========= פוסטים בנושא ========= */
 
-            const tidsMapping = items.map(t => t.tid).join(',');
-            return res.send(`read=t-${tts}=ApiEnter,yes,1,1,1,9,Number`);
-        }
+async function handleTopicPosts(ctx) {
+  const { pressed, topicId, index } = ctx;
+  if (!topicId) return askWithState('main', {}, ctx);
 
-        if (step === 'process_topics') {
-            if (userInput === '9') return res.send(`go_to_api=yes&step=main_menu`);
-            const tidsMap = (req.query.tids_map || '').split(',');
-            const selectedIdx = parseInt(userInput) - 1;
+  const posts = await fetchTopicPosts(topicId, 20);
+  if (!posts.length) return sayText('אין פוסטים') + askWithState('main', {}, ctx);
 
-            if (isNaN(selectedIdx) || selectedIdx < 0 || selectedIdx >= tidsMap.length) {
-                return res.send(`say_tts=בחירה שגויה.&go_to_api=yes&step=category_topics&cid=${currentCid}`);
-            }
+  const i = pressed === '6' ? Math.min(index + 1, posts.length - 1)
+          : pressed === '4' ? Math.max(index - 1, 0)
+          : index;
 
-            const targetTid = tidsMap[selectedIdx];
-            return res.send(`go_to_api=yes&step=read_topic&tid=${targetTid}&p_idx=0`);
-        }
+  if (pressed === '8') return askWithState('post_details', { postId: String(posts[i]?.pid || '') }, ctx);
+  if (pressed === '9') return askWithState('main', {}, ctx);
 
-        // ==========================================
-        // 3. נושאים אחרונים (גלובלי)
-        // ==========================================
-        if (step === 'recent_topics') {
-            const response = await axios.get(`${FORUM_URL}/api/recent`);
-            const topics = response.data.topics ? response.data.topics.slice(0, 5) : [];
+  const p = posts[i];
+  const text = cleanHtml(p.content || '').substring(0, 280);
+  return (
+    sayText(`פוסט ${i + 1} מתוך ${posts.length}`) +
+    sayText(text) +
+    sayMenu(['6 פוסט הבא', '4 פוסט קודם', '8 פרטי הפוסט', '9 תפריט ראשי'],
+            'topic_posts', { topicId, index: i }, ctx)
+  );
+}
 
-            let tts = 'הנושאים האחרונים שנפתחו בפורום הם: ';
-            topics.forEach((t, index) => {
-                tts += `לנושא ${index + 1}: ${t.title}. `;
-            });
-            tts += 'לרענון ועדכון רשימה זו, הקישו 8. לחזרה לתפריט, הקישו 9.';
+/* ========= פרטי פוסט ========= */
 
-            const tidsMapping = topics.map(t => t.tid).join(',');
-            return res.send(`read=t-${tts}=ApiEnter,yes,1,1,1,9,Number`);
-        }
+async function handlePostDetails(ctx) {
+  const { pressed, postId } = ctx;
+  if (!postId || pressed === '9') return askWithState('main', {}, ctx);
 
-        if (step === 'process_recent_topics') {
-            if (userInput === '9') return res.send(`go_to_api=yes&step=main_menu`);
-            if (userInput === '8') return res.send(`go_to_api=yes&step=recent_topics`); 
+  const post = await fetchPostDetails(postId);
+  if (!post) return sayText('הפוסט לא נמצא') + askWithState('main', {}, ctx);
 
-            const tidsMap = (req.query.tids_map || '').split(',');
-            const selectedIdx = parseInt(userInput) - 1;
+  const date = post.timestamp ? new Date(post.timestamp).toLocaleDateString('he-IL') : 'לא ידוע';
+  const replyTo = post.toPid ? `בתגובה לפוסט ${post.toPid}` : 'פוסט פתיחה';
 
-            if (isNaN(selectedIdx) || selectedIdx < 0 || selectedIdx >= tidsMap.length) {
-                return res.send(`say_tts=בחירה שגויה.&go_to_api=yes&step=recent_topics`);
-            }
+  return (
+    sayText('פרטי הפוסט') +
+    sayText(`כותב: ${post.user?.username || 'לא ידוע'}`) +
+    sayText(`תאריך: ${date}`) +
+    sayText(replyTo) +
+    sayText(`נושא: ${post.topic?.title || 'לא ידוע'}`) +
+    sayText(`קטגוריה: ${post.category?.name || 'לא ידוע'}`) +
+    sayMenu(['9 תפריט ראשי'], 'post_details', { postId }, ctx)
+  );
+}
 
-            return res.send(`go_to_api=yes&step=read_topic&tid=${tidsMap[selectedIdx]}&p_idx=0`);
-        }
+/* ========= פרטי נושא ========= */
 
-        // התאמה חכמה נוספת עבור הפוסטים האחרונים שמגיעים מ-read
-        if (step === 'main_menu' && req.query.p_idx !== undefined && userInput) {
-            step = 'process_recent_posts';
-        }
+async function handleTopicDetails(ctx) {
+  const { pressed, topicId } = ctx;
+  if (!topicId || pressed === '9') return askWithState('main', {}, ctx);
 
-        // ==========================================
-        // 4. פוסטים אחרונים (גלובלי)
-        // ==========================================
-        if (step === 'recent_posts') {
-            const response = await axios.get(`${FORUM_URL}/api/recent/posts`);
-            const posts = response.data || [];
+  const topic = await fetchTopicDetails(topicId);
+  if (!topic) return sayText('הנושא לא נמצא') + askWithState('main', {}, ctx);
 
-            if (posts.length === 0) {
-                return res.send(`say_tts=אין פוסטים אחרונים. חזרה לתפריט.&go_to_api=yes&step=main_menu`);
-            }
+  const date = topic.timestamp ? new Date(topic.timestamp).toLocaleDateString('he-IL') : 'לא ידוע';
 
-            const post = posts[postIndex];
-            const cleanContent = cleanText(post.content);
-            const author = post.user ? post.user.username : 'משתמש מהפורום';
-            const topicTitle = post.topic ? post.topic.title : 'נושא כללי';
+  return (
+    sayText('פרטי הנושא') +
+    sayText(`כותרת: ${topic.title || 'ללא כותרת'}`) +
+    sayText(`נפתח על ידי: ${topic.user?.username || 'לא ידוע'}`) +
+    sayText(`תאריך: ${date}`) +
+    sayText(`${topic.postcount || 0} תגובות, ${topic.viewcount || 0} צפיות`) +
+    sayText(`קטגוריה: ${topic.category?.name || 'לא ידוע'}`) +
+    sayMenu(['1 האזן לפוסטים', '9 תפריט ראשי'], 'topic_details', { topicId }, ctx)
+  );
+}
 
-            let tts = `פוסט מתוך הנושא: ${topicTitle}. נכתב על ידי ${author}. תוכן הפוסט: ${cleanContent}. `;
-            tts += 'לפוסט הבא, הקישו 6. לפוסט הקודם, הקישו 4. לשמיעת פרטי הפוסט המלאים, הקישו 5. לרענון רשימת הפוסטים מההתחלה, הקישו 8. לחזרה לתפריט, הקישו 9.';
+/* ========= עזר ========= */
 
-            return res.send(`read=t-${tts}=ApiEnter,yes,1,1,1,9,Number`);
-        }
-
-        if (step === 'process_recent_posts') {
-            if (userInput === '9') return res.send(`go_to_api=yes&step=main_menu`);
-            if (userInput === '8') return res.send(`go_to_api=yes&step=recent_posts&p_idx=0`); 
-            
-            if (userInput === '5') {
-                return res.send(`go_to_api=yes&step=post_metadata&tid=${currentTid}&p_idx=${postIndex}&back_to=recent_posts`);
-            }
-
-            let nextIdx = postIndex;
-            if (userInput === '6') nextIdx = postIndex + 1; 
-            if (userInput === '4') nextIdx = Math.max(0, postIndex - 1); 
-
-            return res.send(`go_to_api=yes&step=recent_posts&p_idx=${nextIdx}`);
-        }
-
-        // התאמה חכמה עבור קריאת אשכול ספציפי שמגיע מ-read
-        if (step === 'main_menu' && currentTid && userInput) {
-            step = 'process_read_topic';
-        }
-
-        // ==========================================
-        // 5. קריאת אשכול/נושא ספציפי
-        // ==========================================
-        if (step === 'read_topic') {
-            const response = await axios.get(`${FORUM_URL}/api/topic/${currentTid}`);
-            const posts = response.data.posts || [];
-            const topicTitle = response.data.title || 'נושא';
-
-            if (posts.length === 0 || postIndex >= posts.length) {
-                return res.send(`say_tts=סיימתם לשמוע את כל ההודעות באשכול זה. חזרה לתפריט הראשי.&go_to_api=yes&step=main_menu`);
-            }
-
-            const post = posts[postIndex];
-            const cleanContent = cleanText(post.content);
-            const author = post.user ? post.user.username : 'משתמש מהפורום';
-
-            let tts = `הודעה מספר ${postIndex + 1} באשכול ${topicTitle}. מאת ${author}: ${cleanContent}. `;
-            tts += 'להודעה הבאה, הקישו 6. להודעה הקודמת, הקישו 4. לשמיעת פרטי הודעה זו, הקישו 5. לחזרה לתפריט, הקישו 9.';
-
-            return res.send(`read=t-${tts}=ApiEnter,yes,1,1,1,9,Number`);
-        }
-
-        if (step === 'process_read_topic') {
-            if (userInput === '9') return res.send(`go_to_api=yes&step=main_menu`);
-            
-            if (userInput === '5') {
-                return res.send(`go_to_api=yes&step=post_metadata&tid=${currentTid}&p_idx=${postIndex}&back_to=read_topic`);
-            }
-
-            let nextIdx = postIndex;
-            if (userInput === '6') nextIdx = postIndex + 1;
-            if (userInput === '4') nextIdx = Math.max(0, postIndex - 1);
-
-            return res.send(`go_to_api=yes&step=read_topic&tid=${currentTid}&p_idx=${nextIdx}`);
-        }
-
-        // ==========================================
-        // 6. השמעת פרטי פוסט / נושא (מטא-דאטה)
-        // ==========================================
-        if (step === 'post_metadata') {
-            const backTo = req.query.back_to || 'main_menu';
-            let author = 'לא ידוע', dateStr = 'לא ידוע', repliesCount = '0', views = '0';
-
-            if (backTo === 'recent_posts') {
-                const response = await axios.get(`${FORUM_URL}/api/recent/posts`);
-                const post = response.data[postIndex];
-                if (post) {
-                    author = post.user ? post.user.username : author;
-                    dateStr = parseDate(post.timestamp);
-                }
-            } else {
-                const response = await axios.get(`${FORUM_URL}/api/topic/${currentTid}`);
-                const post = response.data.posts[postIndex];
-                if (post) {
-                    author = post.user ? post.user.username : author;
-                    dateStr = parseDate(post.timestamp);
-                }
-                repliesCount = response.data.postcount ? (response.data.postcount - 1).toString() : '0';
-                views = response.data.viewcount || '0';
-            }
-
-            let metaTts = `פרטי פוסט: נכתב על ידי המשתמש ${author}. פורסם בתאריך ${dateStr}. `;
-            if (backTo === 'read_topic') {
-                metaTts += `באשכול זה יש סך הכל ${repliesCount} תגובות, והוא נצפה ${views} פעמים. `;
-            }
-            metaTts += 'לחזרה להשמעת הפוסט, הקישו מקש כלשהו או המתינו.';
-
-            return res.send(`read=t-${metaTts}=ApiEnter,yes,1,1,1,,Number`);
-        }
-
-        if (step === 'return_from_meta' || (req.query.back_to && userInput)) {
-            const backTo = req.query.back_to || 'main_menu';
-            return res.send(`go_to_api=yes&step=${backTo}&tid=${currentTid}&p_idx=${postIndex}`);
-        }
-
-    } catch (error) {
-        console.error('Error:', error.message);
-        return res.send('say_tts=אירעה שגיאה בתקשורת עם הפורום. חזרה לתפריט הראשי.&go_to_api=yes&step=main_menu');
-    }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server connected on port ${PORT}`));
-
-module.exports = app;
+function cleanHtml(html) {
+  return html
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, 'ו')
+    .replace(/&lt;|&gt;/g, ' ')
+    .replace(/&quot;/g, '"')
+    .replace(/&#\d+;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}

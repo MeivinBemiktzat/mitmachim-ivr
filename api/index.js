@@ -95,7 +95,7 @@ function cleanText(html) {
   text = text.replace(/https?:\/\/\S+/gi, ' קישור המערכת ');
   
   // שלב ו: ניקוי תווים מיוחדים שמשבשים את הפרוטוקול של ימות המשיח (חשוב מאוד עבור מפרידי פקודות)
-  text = text.replace(/[._\-+=*#@^~`|<>\\\/\[\]{}]+/g, ' ');
+  text = text.replace(/[ _+=*#@^~`|<>\\\/\[\]{}]+/g, ' ');
   
   // שלב ז: צמצום רווחים כפולים ורווחי קצוות
   text = text.replace(/\s+/g, ' ').trim();
@@ -188,10 +188,13 @@ function buildFastMenuRead(paramName, waitSec = 7, parts = []) {
 
   cleanedParts.push('t-אנא הקישו בחירה');
 
-  return `read=${cleanedParts.join('.')}=${paramName},no,1,1,${waitSec},Digits,no,no`;
+  const message = cleanedParts.join('.');
+
+  return `read=${message}=${paramName},no,1,1,${waitSec},Digits,no,no`;
 }
 
 function buildInteractiveRead(paramName, parts, waitSec = 7) {
+
   const cleanedParts = parts
     .filter(p => p && String(p).trim() !== '')
     .map(p => {
@@ -201,9 +204,9 @@ function buildInteractiveRead(paramName, parts, waitSec = 7) {
         .trim();
     });
 
-  const message = cleanedParts.join('.');
+  cleanedParts.push('t-אנא הקישו בחירה');
 
-  return `read=${message}=${paramName},no,1,1,${waitSec},Digits,no,no`;
+  return `read=${cleanedParts.join('.')}=${paramName},no,1,1,${waitSec},Digits,no,no`;
 }
 
 /**
@@ -306,6 +309,22 @@ module.exports = async (req, res) => {
   // שליפת מצב המסך הנוכחי מתוך הפרמטרים (ברירת מחדל היא main)
   let currentScreen = queryData.screen || 'main';
 
+  if (queryData.api_add_screen) {
+  currentScreen = queryData.api_add_screen;
+}
+
+if (queryData.api_add_tid) {
+  queryData.tid = queryData.api_add_tid;
+}
+
+if (queryData.api_add_page) {
+  queryData.page = queryData.api_add_page;
+}
+
+if (queryData.api_add_cid) {
+  queryData.cid = queryData.api_add_cid;
+}
+
   try {
     // ------------------------------------------------------------------------
     // שלב א': טיפול ועיבוד של הקשות משתמש אקטיביות (עדיפות עליונה למניעת לופים)
@@ -351,7 +370,9 @@ module.exports = async (req, res) => {
         
         if (!isNaN(index) && index >= 0 && index < topicIds.length) {
           // העברה ישירה למסך שמיעת הנושא בתוך אותו ה-API ללא שימוש ב-go_to_folder!
-          return res.send(`api_add_screen=topic&api_add_tid=${topicIds[index]}&api_add_page=0&read=t-טוען נושא=dummy,no,1,1,1,Digits,no,no`);
+          return res.send(
+`read=t-טוען נושא=dummy,no,1,1,1,Digits,no,no&api_add_tid=${topicIds[index]}&api_add_page=0&api_add_screen=topic`
+);
         } else {
           // הקשה שגויה ברשימת נושאים אחרונים
           const errorMsg = idList(['בחירה לא תקינה.']);
@@ -372,7 +393,9 @@ module.exports = async (req, res) => {
         const topicIds = String(queryData.tids || '').split(',').filter(x => x);
         
         if (!isNaN(index) && index >= 0 && index < topicIds.length) {
-          return res.send(`api_add_screen=topic&api_add_tid=${topicIds[index]}&api_add_page=0&read=t-מיד נשמע את הנושא=dummy,no,1,1,1,Digits,no,no`);
+          return res.send(
+`read=t-מיד נשמע את הנושא=dummy,no,1,1,1,Digits,no,no&api_add_tid=${topicIds[index]}&api_add_page=0&api_add_screen=topic`
+);
         } else {
           const errorMsg = idList(['בחירה לא תקינה.']);
           return res.send(`${errorMsg}&api_add_screen=topics&read=t-אנא הקישו שוב=dummy,no,1,1,1,Digits,no,no`);
@@ -390,14 +413,14 @@ module.exports = async (req, res) => {
         currentScreen = 'main';
       } else if (selection === '*' && currentCid) {
         // מעבר ישיר לשמיעת נושאים בתוך הקטגוריה הנוכחית
-        return res.send(`api_add_screen=cattopics&api_add_cid=${currentCid}&read=t-טוען נושאים בקטגוריה=dummy,no,1,1,1,Digits,no,no`);
+        return res.send(`read=t-טוען נושאים בקטגוריה=dummy,no,1,1,1,Digits,no,no&api_add_cid=${currentCid}&api_add_screen=cattopics`);
       } else {
         const index = parseInt(selection, 10) - 1;
         const categoryIds = String(queryData.cids || '').split(',').filter(x => x);
         
         if (!isNaN(index) && index >= 0 && index < categoryIds.length) {
           // טעינת תת-קטגוריה או הצגת הנושאים שלה בתוך אותו ה-API
-          return res.send(`api_add_screen=categories&api_add_cid=${categoryIds[index]}&read=t-טוען קטגוריה=dummy,no,1,1,1,Digits,no,no`);
+          return res.send(`read=t-טוען קטגוריה=dummy,no,1,1,1,Digits,no,no&api_add_cid=${categoryIds[index]}&api_add_screen=categories`);
         } else {
           const errorMsg = idList(['הקשה שגויה.']);
           return res.send(`${errorMsg}&api_add_screen=categories${currentCid ? '&api_add_cid=' + currentCid : ''}&read=t-נסו שוב=dummy,no,1,1,1,Digits,no,no`);
@@ -415,7 +438,7 @@ module.exports = async (req, res) => {
         const topicIds = String(queryData.tids || '').split(',').filter(x => x);
         
         if (!isNaN(index) && index >= 0 && index < topicIds.length) {
-          return res.send(`api_add_screen=topic&api_add_tid=${topicIds[index]}&api_add_page=0&read=t-טוען=dummy,no,1,1,1,Digits,no,no`);
+          return res.send(`read=t-טוען=dummy,no,1,1,1,Digits,no,no&api_add_tid=${topicIds[index]}&api_add_page=0&api_add_screen=topic`);
         } else {
           return res.send(`id_list_message=t-בחירה שגויה&api_add_screen=main&read=t-חוזר לתפריט=dummy,no,1,1,1,Digits,no,no`);
         }
@@ -434,20 +457,20 @@ module.exports = async (req, res) => {
         currentScreen = 'main';
       } else if (selection === '1') {
         // מעבר לפוסט הבא בנושא
-        return res.send(`api_add_screen=topic&api_add_tid=${topicId}&api_add_page=${currentPage + 1}&read=t-הבא=dummy,no,1,1,1,Digits,no,no`);
+        return res.send(`api_add_tid=${topicId}&api_add_page=${currentPage + 1}&read=t-הבא=dummy,no,1,1,1,Digits,no,no&api_add_screen=topic`);
       } else if (selection === '2') {
         // מעבר לפוסט הקודם (מגבילים שלא יירד מתחת ל-0)
         const prevPage = currentPage - 1 < 0 ? 0 : currentPage - 1;
-        return res.send(`api_add_screen=topic&api_add_tid=${topicId}&api_add_page=${prevPage}&read=t-הקודם=dummy,no,1,1,1,Digits,no,no`);
+        return res.send(`api_add_tid=${topicId}&api_add_page=${prevPage}&read=t-הקודם=dummy,no,1,1,1,Digits,no,no&api_add_screen=topic`);
       } else if (selection === '3') {
         // הצגת פרטים נוספים על הפוסט הנוכחי
         const details = decodeURIComponent(queryData.details || '').split('|').filter(x => x);
         const detailsAudio = idList(details);
         const readCmd = buildFastMenuRead('detback', 6);
-        return res.send(`${detailsAudio}.t-לחזרה לשמיעת ההודעה הקישו 1.&${readCmd}&api_add_screen=detback&api_add_tid=${topicId}&api_add_page=${currentPage}`);
+        return res.send(`${detailsAudio}.t-לחזרה לשמיעת ההודעה הקישו 1.&${readCmd}&api_add_tid=${topicId}&api_add_page=${currentPage}&api_add_screen=detback`);
       } else {
         // הקשה לא חוקית בניווט פוסטים - נשארים באותו פוסט
-        return res.send(`api_add_screen=topic&api_add_tid=${topicId}&api_add_page=${currentPage}&read=t-שגיאה=dummy,no,1,1,1,Digits,no,no`);
+        return res.send(`api_add_tid=${topicId}&api_add_page=${currentPage}&read=t-שגיאה=dummy,no,1,1,1,Digits,no,no&api_add_screen=topic`);
       }
     }
 
@@ -455,7 +478,7 @@ module.exports = async (req, res) => {
     if (queryData.detback !== undefined && queryData.detback !== '') {
       const topicId = String(queryData.tid || '');
       const currentPage = parseInt(queryData.page || '0', 10);
-      return res.send(`api_add_screen=topic&api_add_tid=${topicId}&api_add_page=${currentPage}&read=t-חוזר=dummy,no,1,1,1,Digits,no,no`);
+      return res.send(`api_add_tid=${topicId}&api_add_page=${currentPage}&read=t-חוזר=dummy,no,1,1,1,Digits,no,no&api_add_screen=topic`);
     }
 
     // 8. טיפול במסך סיום נושא (topicend)
@@ -464,7 +487,7 @@ module.exports = async (req, res) => {
       const topicId = String(queryData.tid || '');
       
       if (selection === '1') {
-        return res.send(`api_add_screen=topic&api_add_tid=${topicId}&api_add_page=0&read=t-מהתחלה=dummy,no,1,1,1,Digits,no,no`);
+        return res.send(`api_add_tid=${topicId}&api_add_page=0&read=t-מהתחלה=dummy,no,1,1,1,Digits,no,no&api_add_screen=topic`);
       } else {
         currentScreen = 'main';
       }
@@ -507,7 +530,9 @@ const menuParts = buildTopicListParts(
 const topicIdsString = topics.map(t => t.tid).join(',');
 const readCommand = buildFastMenuRead('recentsel', 9, menuParts);
 
-return res.send(`${readCommand}&api_add_tids=${topicIdsString}&api_add_screen=recent`);
+return res.send(
+`${readCommand}&api_add_screen=recent&api_add_tids=${topicIdsString}`
+);
     }
 
     // ===== מסך נושאים אחרונים שנפתחו =====
@@ -534,7 +559,9 @@ return res.send(`${readCommand}&api_add_tids=${topicIdsString}&api_add_screen=re
 const topicIdsString = topics.map(t => t.tid).join(',');
 const readCommand = buildFastMenuRead('topicsel', 9, menuParts);
 
-return res.send(`${readCommand}&api_add_tids=${topicIdsString}&api_add_screen=topics`);
+return res.send(
+`${readCommand}&api_add_screen=topics&api_add_tids=${topicIdsString}`
+);
     }
 
     // ===== מסך קטגוריות ראשיות ותתי-קטגוריות =====
@@ -611,7 +638,7 @@ const readCommand = buildFastMenuRead(
 );
 
 return res.send(
- `${readCommand}&api_add_tids=${topicIdsString}&api_add_screen=cattopics`
+`${readCommand}&api_add_screen=cattopics&api_add_tids=${topicIdsString}`
 );
     }
 
@@ -683,17 +710,19 @@ return res.send(
       const metadataString = encodeURIComponent(postDetailsArray.join('|'));
       
       return res.send(
-        `${audioOutput}.${navigationPrompt}&${readCommand}` +
-        `&api_add_tid=${topicId}` +
-        `&api_add_page=${currentPage}` +
-        `&api_add_screen=topic` +
-        `&api_add_details=${metadataString}`
-      );
+ `${audioOutput}.${navigationPrompt}&${readCommand}` +
+ `&api_add_screen=topic` +
+ `&api_add_tid=${topicId}` +
+ `&api_add_page=${currentPage}` +
+ `&api_add_details=${metadataString}`
+);
     }
 
     // הגנת קצה - אם הגענו למצב לא מזוהה, נחזיר לתפריט הראשי פנימית
     console.warn(`[Fallback] Unhandled screen state: ${currentScreen}. Redirecting to main menu.`);
-    return res.send(`api_add_screen=main&read=t-טועה מערכת חוזר להתחלה=dummy,no,1,1,1,Digits,no,no`);
+    return res.send(
+`read=t-טוען מערכת חוזר להתחלה=dummy,no,1,1,1,Digits,no,no&api_add_screen=main`
+);
 
   } catch (globalError) {
     console.error('[Global API Exception] Critical failure in module execution:', globalError);

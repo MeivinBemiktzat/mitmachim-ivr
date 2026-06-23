@@ -22,13 +22,14 @@ const MAX_BODY_CHARS  = 950;  // הגבלת אורך מקסימלי לגוף ה�
 const DEFAULT_TIMEOUT = 9000; // זמן המתנה לקריאות שרת במילישניות
 
 // ============================================================================
-// פונקציית עזר קריטית: פיצול מזהים שחוזרים מ-ימות המשיח
+// פונקציות עזר קריטיות לעבודה עם פרמטרי ימות המשיח
 // ============================================================================
 
 /**
- * *** תיקון הבאג המרכזי ***
- * ימות המשיח שומר api_add_* עם ^ כמפריד, אבל כשמחזיר אותם לשרת
- * הוא ממיר ^ ל->. לכן יש לפצל לפי > (ולא ,).
+ * *** תיקון הבאג המרכזי - פיצול מזהים ***
+ *
+ * ימות המשיח שומר api_add_* עם ^ כמפריד.
+ * כשמחזיר לשרת: ^ → > (עקב URL encoding).
  * הפונקציה תומכת בשני המפרידים > ו-, לגמישות מקסימלית.
  *
  * @param {string} raw הערך הגולמי שהגיע בפרמטר
@@ -36,8 +37,23 @@ const DEFAULT_TIMEOUT = 9000; // זמן המתנה לקריאות שרת במי�
  */
 function splitIds(raw) {
   if (!raw) return [];
-  // תמיכה בשני המפרידים: > (חוזר מ-ימות המשיח) ו-, (תאימות לאחור)
   return String(raw).split(/[>,]/).map(x => x.trim()).filter(x => x !== '');
+}
+
+/**
+ * *** תיקון הבאג השורש ***
+ *
+ * ימות המשיח שומר משתנה state בשם api_add_tids ושולח אותו חזרה
+ * בשם api_add_tids (לא tids!). לכן כשקוראים tids צריך לבדוק
+ * BOTH שמות: q['api_add_tids'] וגם q.tids (לתאימות לאחור).
+ *
+ * @param {Object} q אובייקט הפרמטרים הנכנסים
+ * @param {string} key שם המשתנה (ללא api_add_)
+ * @returns {string} הערך שנמצא
+ */
+function getState(q, key) {
+  // ימות המשיח מחזיר api_add_X בשם api_add_X (לא X)
+  return q['api_add_' + key] || q[key] || '';
 }
 
 // ============================================================================
@@ -131,7 +147,7 @@ function cleanText(html) {
   // חשוב: ^ > * = & מפרידי פרוטוקול קריטיים
   text = text.replace(/[._\-+=*#@^~`|<>\\\/\[\]{}]+/g, ' ');
 
-  // צמצום רווחים
+  // צמצום רווחי��
   text = text.replace(/\s+/g, ' ').trim();
 
   return text;
@@ -180,7 +196,7 @@ function timeAgo(ts) {
 // ============================================================================
 
 /**
- * מנקה חלק טקסט בודד מתווים שמשבשים את פרוטוקול ימות המשיח.
+ * מנקה חלק טקסט בודד מתווי�� שמשבשים את פרוטוקול ימות המשיח.
  */
 function sanitizePart(part) {
   return String(part)
@@ -343,8 +359,8 @@ module.exports = async (req, res) => {
     // ---- 2. מסך פוסטים אחרונים (recent) ----
     if (q.recentsel !== undefined && q.recentsel !== '') {
       const sel      = String(q.recentsel).trim();
-      const topicIds = splitIds(q.tids); // *** תיקון: שימוש ב-splitIds ***
-      console.log(`[Menu Process] User pressed ${sel} on Recent Topics. TIDs: ${topicIds.join(',')}`);
+      const topicIds = splitIds(getState(q, 'tids')); // *** תיקון: api_add_tids מגיע בשם api_add_tids ***
+      console.log(`[recentsel] pressed=${sel}, tids raw="${getState(q, 'tids')}", parsed=${topicIds.length} ids`);
 
       if (sel === '0') {
         currentScreen = 'main';
@@ -380,8 +396,8 @@ module.exports = async (req, res) => {
     // ---- 3. מסך נושאים חדשים (topics) ----
     if (q.topicsel !== undefined && q.topicsel !== '') {
       const sel      = String(q.topicsel).trim();
-      const topicIds = splitIds(q.tids); // *** תיקון: שימוש ב-splitIds ***
-      console.log(`[Menu Process] User pressed ${sel} on Newest Topics. TIDs: ${topicIds.join(',')}`);
+      const topicIds = splitIds(getState(q, 'tids')); // *** תיקון: api_add_tids מגיע בשם api_add_tids ***
+      console.log(`[topicsel] pressed=${sel}, tids raw="${getState(q, 'tids')}", parsed=${topicIds.length} ids`);
 
       if (sel === '0') {
         currentScreen = 'main';
@@ -414,9 +430,9 @@ module.exports = async (req, res) => {
     // ---- 4. מסך קטגוריות (categories) ----
     if (q.catsel !== undefined && q.catsel !== '') {
       const sel         = String(q.catsel).trim();
-      const currentCid  = String(q.curcid || '');
-      const categoryIds = splitIds(q.cids); // *** תיקון: שימוש ב-splitIds ***
-      console.log(`[Menu Process] User pressed ${sel} on Categories Screen. CIDs: ${categoryIds.join(',')}`);
+      const currentCid  = getState(q, 'curcid');
+      const categoryIds = splitIds(getState(q, 'cids')); // *** תיקון: api_add_cids מגיע בשם api_add_cids ***
+      console.log(`[catsel] pressed=${sel}, cids raw="${getState(q, 'cids')}", parsed=${categoryIds.length} ids`);
 
       if (sel === '0') {
         currentScreen = 'main';
@@ -458,15 +474,15 @@ module.exports = async (req, res) => {
     // ---- 5. נושאים בתוך קטגוריה (cattopicsel) ----
     if (q.cattopicsel !== undefined && q.cattopicsel !== '') {
       const sel      = String(q.cattopicsel).trim();
-      const topicIds = splitIds(q.tids); // *** תיקון: שימוש ב-splitIds ***
-      const cid      = String(q.cid || '');
-      console.log(`[Menu Process] User pressed ${sel} on CatTopics. TIDs: ${topicIds.join(',')}`);
+      const topicIds = splitIds(getState(q, 'tids')); // *** תיקון: api_add_tids מגיע בשם api_add_tids ***
+      const cid      = getState(q, 'cid');
+      console.log(`[cattopicsel] pressed=${sel}, tids raw="${getState(q, 'tids')}", parsed=${topicIds.length} ids, cid=${cid}`);
 
       if (sel === '0') {
         currentScreen = 'main';
       } else if (sel === '*') {
         // כוכבית: עמוד הבא בקטגוריה
-        const nextPage = parseInt(q.catpage || '1', 10) + 1;
+        const nextPage = parseInt(getState(q, 'catpage') || '1', 10) + 1;
         return res.send(buildTransition('עמוד הבא', {
           screen: 'cattopics',
           cid: cid,
@@ -474,7 +490,7 @@ module.exports = async (req, res) => {
         }));
       } else if (sel === '#') {
         // עמוד קודם בקטגוריה
-        const prevPage = Math.max(1, parseInt(q.catpage || '1', 10) - 1);
+        const prevPage = Math.max(1, parseInt(getState(q, 'catpage') || '1', 10) - 1);
         return res.send(buildTransition('עמוד קודם', {
           screen: 'cattopics',
           cid: cid,
@@ -497,7 +513,7 @@ module.exports = async (req, res) => {
           return res.send(buildResponse(readCmd, {
             tids: topicIds.join('>'),
             cid: cid,
-            catpage: q.catpage || '1',
+            catpage: getState(q, 'catpage') || '1',
             screen: 'cattopics'
           }));
         }
@@ -507,8 +523,8 @@ module.exports = async (req, res) => {
     // ---- 6. ניווט בתוך נושא (topicnav) ----
     if (q.topicnav !== undefined && q.topicnav !== '') {
       const sel         = String(q.topicnav).trim();
-      const topicId     = String(q.tid || '');
-      const currentPage = parseInt(q.page || '0', 10);
+      const topicId     = getState(q, 'tid');
+      const currentPage = parseInt(getState(q, 'page') || '0', 10);
       console.log(`[Topic Navigation] ${sel} on Topic ${topicId}, Page ${currentPage}`);
 
       if (sel === '0') {
@@ -528,7 +544,7 @@ module.exports = async (req, res) => {
         }));
       } else if (sel === '3') {
         // פרטי הודעה
-        const details = String(q.details || '').split('|').filter(x => x);
+        const details = String(getState(q, 'details') || '').split('|').filter(x => x);
         details.push('לחזרה לשמיעת ההודעה הקישו 1');
         const readCmd = buildReadMenu(details, 'detback', { waitSec: 6 });
         return res.send(buildResponse(readCmd, {
@@ -554,8 +570,8 @@ module.exports = async (req, res) => {
 
     // ---- 7. חזרה מפרטי הודעה (detback) ----
     if (q.detback !== undefined && q.detback !== '') {
-      const topicId     = String(q.tid || '');
-      const currentPage = parseInt(q.page || '0', 10);
+      const topicId     = getState(q, 'tid');
+      const currentPage = parseInt(getState(q, 'page') || '0', 10);
       return res.send(buildTransition('חוזר להודעה', {
         screen: 'topic',
         tid: topicId,
@@ -566,7 +582,7 @@ module.exports = async (req, res) => {
     // ---- 8. סיום נושא (topicend) ----
     if (q.topicend !== undefined && q.topicend !== '') {
       const sel     = String(q.topicend).trim();
-      const topicId = String(q.tid || '');
+      const topicId = getState(q, 'tid');
 
       if (sel === '1') {
         return res.send(buildTransition('מתחילים מחדש', {
@@ -595,7 +611,7 @@ module.exports = async (req, res) => {
     // ---- 10. בחירה מתוצאות חיפוש (searchsel) ----
     if (q.searchsel !== undefined && q.searchsel !== '') {
       const sel      = String(q.searchsel).trim();
-      const topicIds = splitIds(q.tids); // *** תיקון: שימוש ב-splitIds ***
+      const topicIds = splitIds(getState(q, 'tids')); // *** תיקון: api_add_tids מגיע בשם api_add_tids ***
 
       if (sel === '0') {
         currentScreen = 'main';
@@ -692,7 +708,7 @@ module.exports = async (req, res) => {
 
     // ===== מסך קטגוריות =====
     if (currentScreen === 'categories') {
-      const cid = q.cid ? String(q.cid) : '';
+      const cid = getState(q, 'cid');
       console.log(`[Screen Render] Loading categories. CID: ${cid || 'root'}`);
 
       let categoriesList = [];
@@ -738,8 +754,8 @@ module.exports = async (req, res) => {
 
     // ===== מסך נושאים בתוך קטגוריה =====
     if (currentScreen === 'cattopics') {
-      const cid     = String(q.cid || '');
-      const catPage = Math.max(1, parseInt(q.page || q.catpage || '1', 10));
+      const cid     = getState(q, 'cid');
+      const catPage = Math.max(1, parseInt(getState(q, 'page') || getState(q, 'catpage') || '1', 10));
       if (!cid) {
         return res.send(buildTransition('שגיאה חוזר לתפריט', { screen: 'main' }));
       }
@@ -772,8 +788,8 @@ module.exports = async (req, res) => {
 
     // ===== מסך שמיעת נושא =====
     if (currentScreen === 'topic') {
-      const topicId     = String(q.tid || '');
-      const currentPage = parseInt(q.page || '0', 10);
+      const topicId     = getState(q, 'tid');
+      const currentPage = parseInt(getState(q, 'page') || '0', 10);
 
       if (!topicId) {
         return res.send(buildTransition('שגיאת מזהה נושא', { screen: 'main' }));
@@ -863,7 +879,7 @@ module.exports = async (req, res) => {
 
     // ===== מסך תוצאות חיפוש =====
     if (currentScreen === 'searchresults') {
-      const rawQuery = String(q.sq || '');
+      const rawQuery = getState(q, 'sq');
       const searchTerm = decodeURIComponent(rawQuery);
       console.log(`[Screen Render] Searching for: "${searchTerm}"`);
 

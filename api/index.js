@@ -182,9 +182,18 @@ function buildFastMenuRead(paramName, waitSec = 7) {
 }
 
 function buildInteractiveRead(paramName, parts, waitSec = 7) {
-  const audio = idList(parts);
-  const read = buildFastMenuRead(paramName, waitSec);
-  return `${audio}&${read}`;
+  const cleanedParts = parts
+    .filter(p => p && String(p).trim() !== '')
+    .map(p => {
+      return 't-' + String(p)
+        .replace(/[.\-]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    });
+
+  const message = cleanedParts.join('.');
+
+  return `read=${message}=${paramName},no,1,1,${waitSec},Digits,no,no`;
 }
 
 /**

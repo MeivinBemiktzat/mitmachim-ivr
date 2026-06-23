@@ -128,45 +128,40 @@ export default async function handler(req, res) {
     // ========================================================================
     // מַסָךְ רָאשִׁי: תפריט הכניסה המרכזי של הפורום הטלפוני
     // ========================================================================
-    if (currentScreen === 'main') {
-      const selection = String(q.mainsel || '');
+    
+    if (screen === 'main') {
+    // שליפת הבחירה שהקיש המשתמש (מתוך ה-query או ה-body, בהתאם לאיך שהגדרת את q)
+    const selection = String(q.mainsel || '');
 
-      // במידה והמשתמש טרם בחר אפשרות, נשמיע את הודעת הפתיחה המשודרגת והתפריט
-      if (!selection) {
-        const welcomeSpeech = [
-          'ברוכים הבאים לפורום מתמחים טופ הטלפוני.',
-          'כאן תוכלו להאזין לפוסטים והנושאים שנוצרו בפורום מתמחים טופ.',
-          'לכניסה לפוסטים האחרונים הקישו 1.',
-          'לשמיעת הנושאים האחרונים שנפתחו הקישו 2.',
-          'לכניסה לפי קטגוריות הקישו 3.'
-        ];
-
-        const audioOutput = idList(welcomeSpeech);
-        const readCommand = buildFastMenuRead('mainsel', 1);
-
-        return res.send(`${audioOutput}&${readCommand}&api_add_screen=main`);
-      }
-
-      // ניתוח בחירת המשתמש בתפריט הראשי והעברה פנימית מהירה למסך הבא
-      if (selection === '1') {
-        return await renderRecentPosts(req, res, q, 0);
-      } else if (selection === '2') {
-        return await renderNewTopics(req, res, q, 0);
-      } else if (selection === '3') {
-        return await renderCategories(req, res, q);
-      } else {
-        // בחירה שגויה - השמעת שגיאה קצרה וחזרה מיידית לתפריט הראשי ללא ניתוק
-        const errorSpeech = idList(['המקש שהוקש שגוי, אנא נסו שנית.']);
-        const welcomeSpeech = [
-          'לכניסה לפוסטים האחרונים הקישו 1.',
-          'לשמיעת הנושאים האחרונים שנפתחו הקישו 2.',
-          'לכניסה לפי קטגוריות הקישו 3.'
-        ];
-        const audioOutput = idList(welcomeSpeech);
-        const readCommand = buildFastMenuRead('mainsel', 1);
-        return res.send(`${errorSpeech}.${audioOutput}&${readCommand}&api_add_screen=main`);
-      }
+    // אם המשתמש כבר הקיש ספרה, ננתב אותו לפי הלחיצה שלו
+    if (selection) {
+        if (selection === '1') {
+            // קוד להצגת פוסטים אחרונים
+            return res.send('go_to_folder=... או פונקציה שמחזירה את הפוסטים האחרונים');
+        }
+        if (selection === '2') {
+            // קוד להצגת נושאים אחרונים
+            return res.send('go_to_folder=... או ניתוב לנושאים אחרונים');
+        }
+        if (selection === '3') {
+            // קוד להצגת קטגוריות
+            return res.send('go_to_folder=... או ניתוב לקטגוריות');
+        }
+        
+        // אם הקיש מקש לא תקין, נשמיע שוב את התפריט הראשי
     }
+
+    // ברירת מחדל: אם המשתמש רק נכנס ועדיין לא הקיש כלום (selection ריק)
+    return res.send(
+        'id_list_message=t-ברוכים הבאים לפורום מתמחים טופ הטלפוני..' +
+        't-כאן תוכלו להאזין לפוסטים והנושאים שנוצרו בפורום מתמחים טופ..' +
+        't-לכניסה לפוסטים האחרונים הקישו 1..' +
+        't-לשמיעת הנושאים האחרונים שנפתחו הקישו 2..' +
+        't-לכניסה לפי קטגוריות הקישו 3.' +
+        '&read=^mainsel>yes>1>1>7>Digits>no>no' +
+        '&api_add_screen=main'
+    );
+}
 
     // ========================================================================
     // מַסָךְ פוסטים אחרונים (הודעות אחרונות בפורום)

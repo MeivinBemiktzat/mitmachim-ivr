@@ -40,7 +40,7 @@ module.exports = async (req, res) => {
 console.log(output);
 console.log('==================================');
 
-res.status(200).send(output);
+res.status(200).send(output.replace(/\n/g, ''));
   } catch (err) {
     console.error('IVR Error:', err);
     res.status(200).send(sayText('שגיאה, נסה שוב') + endCall());

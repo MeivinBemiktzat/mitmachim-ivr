@@ -4,7 +4,8 @@
   "description": "Advanced Telephone IVR Gateway for Mitmachim Top Forum",
   "main": "api/index.js",
   "dependencies": {
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "node-fetch": "^3.3.2"
   },
   "engines": {
     "node": ">=18.0.0"

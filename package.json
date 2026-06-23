@@ -1,0 +1,13 @@
+{
+  "name": "mitmachim-top-ivr-gateway",
+  "version": "2.5.0",
+  "description": "Advanced Telephone IVR Gateway for Mitmachim Top Forum",
+  "main": "api/index.js",
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "private": true
+}

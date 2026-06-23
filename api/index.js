@@ -36,7 +36,11 @@ module.exports = async (req, res) => {
       case 'topic_details': output = await handleTopicDetails(ctx); break;
       default:              output = buildMainMenu({ ...ctx, pressed: '' });
     }
-    res.status(200).send(output);
+    console.log('========== IVR RESPONSE ==========');
+console.log(output);
+console.log('==================================');
+
+res.status(200).send(output);
   } catch (err) {
     console.error('IVR Error:', err);
     res.status(200).send(sayText('שגיאה, נסה שוב') + endCall());

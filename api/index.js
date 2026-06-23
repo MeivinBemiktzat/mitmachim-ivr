@@ -10,7 +10,7 @@
 // ============================================================================
 
 const express = require('express');
-const fetch = require('node-fetch');
+const https = require('https');
 
 const app = express();
 
@@ -88,36 +88,56 @@ function cleanTextForTTS(text, maxLength = MAX_BODY_CHARS) {
 }
 
 /**
- * ביצוע בקשת HTTP מאובטחת ומנוהלת מול ה-Read API של פורום NodeBB.
+ * מנוע פנימי עצמאי מבוסס קור-נוד לביצוע בקשות HTTP/S מאובטחות מול הפורום.
+ * מונע שגיאות של חוסר בספריות חיצוניות בענן.
  * @param {string} path - הנתיב הפנימי של הפורום (למשל /recent).
  * @returns {Promise<object|null>} תגובת ה-JSON המלאה מהפורום או null במקרה של תקלה.
  */
-async function fetchFromForum(path) {
-    const cleanPath = path.startsWith('/') ? path : `/${path}`;
-    const url = `${FORUM_URL}/api${cleanPath}`;
-    
-    console.log(`[Forum Request] Dispatching HTTP GET to: ${url}`);
-    
-    try {
-        const response = await fetch(url, {
-            timeout: DEFAULT_TIMEOUT,
-            headers: { 
-                'User-Agent': 'Mitmachim-IVR-Advanced-Gateway-CommonJS/2.0',
+function fetchFromForum(path) {
+    return new Promise((resolve) => {
+        const cleanPath = path.startsWith('/') ? path : `/${path}`;
+        const url = `${FORUM_URL}/api${cleanPath}`;
+        
+        console.log(`[Forum Request] Core Native GET to: ${url}`);
+        
+        const options = {
+            headers: {
+                'User-Agent': 'Mitmachim-IVR-Native-Core-Gateway/2.5',
                 'Accept': 'application/json'
+            },
+            timeout: DEFAULT_TIMEOUT
+        };
+
+        const req = https.get(url, options, (res) => {
+            if (res.statusCode !== 200) {
+                console.error(`[Forum Error Response] Native API returned status code ${res.statusCode} for path ${path}`);
+                return resolve(null);
             }
+
+            let data = '';
+            res.on('data', (chunk) => { data += chunk; });
+            res.on('end', () => {
+                try {
+                    const parsedData = JSON.parse(data);
+                    resolve(parsedData);
+                } catch (e) {
+                    console.error(`[JSON Parse Error] Failed to decode API payload from path ${path}:`, e.message);
+                    resolve(null);
+                }
+            });
         });
-        
-        if (!response.ok) {
-            console.error(`[Forum Error Response] API returned status code ${response.status} for path ${path}`);
-            return null;
-        }
-        
-        const data = await response.json();
-        return data;
-    } catch (err) {
-        console.error(`[Network Exception] Failed to fetch data from forum path ${path}:`, err.message);
-        return null;
-    }
+
+        req.on('error', (err) => {
+            console.error(`[Network Exception] Core Client failure on path ${path}:`, err.message);
+            resolve(null);
+        });
+
+        req.on('timeout', () => {
+            console.error(`[Network Timeout] API Request exceeded maximum threshold of ${DEFAULT_TIMEOUT}ms on path ${path}`);
+            req.destroy();
+            resolve(null);
+        });
+    });
 }
 
 // ============================================================================
@@ -537,7 +557,7 @@ async function handleTopicViewScreen(query, res) {
                 return res.send(`${startAudio}${navPrompt}${readCommand}&api_add_tid=${topicId}&api_add_page=${currentPage}&api_add_post_idx=${currentPostIndex}&api_add_screen=topic_view`);
             }
         } else if (navCommand === '3') {
-            // שמיעה חוזרת - משאיר את האינדקסים זהים
+            // שמיעה חוזרת
             console.log(`[Topic Replay] Re-playing post index ${currentPostIndex}`);
         } else {
             const invalidAudio = idList(['t-מקש ניווט שגוי .']);
@@ -555,7 +575,6 @@ async function handleTopicViewScreen(query, res) {
 
     const audioParts = [];
     
-    // השמעת כותרת הנושא רק בכניסה הראשונית האבסולוטית לדיון
     if (currentPostIndex === 0 && currentPage === 1 && !selection) {
         audioParts.push(`t-פותח את הדיון בנושא , ${topicTitle} .`);
     }
@@ -581,8 +600,6 @@ async function handleTopicViewScreen(query, res) {
 
 /**
  * מנגנון הגנה וניתוב חזרה לתפריט הראשי במקרה של שגיאות קריטיות (Fallback Safety Handler)
- * @param {object} res Express Response Object
- * @param {string} msgText הודעת שגיאה שהמערכת תקריא למשתמש לפני הניתוב.
  */
 function sendFallbackRedirect(res, msgText) {
     console.warn(`[Fallback Core Triggered] Reason: ${msgText}`);
@@ -593,7 +610,6 @@ function sendFallbackRedirect(res, msgText) {
         't-המערכת נתקלה בקושי , חוזרים כעת באופן אוטומטי לתפריט הראשי של הפורום הטלפוני .'
     ]);
     
-    // הפעלה מחדש של משתני התפריט הראשי
     const readCommand = buildFastMenuRead('mainsel', 1, 1, '8');
     return res.send(`${audioOutput}${readCommand}&api_add_screen=main`);
 }

@@ -181,6 +181,12 @@ function buildFastMenuRead(paramName, waitSec = 7) {
   return `read=t- אנא הקישו בחירה=${paramName},no,1,1,${waitSec},Digits,no,no`;
 }
 
+function buildInteractiveRead(paramName, parts, waitSec = 7) {
+  const audio = idList(parts);
+  const read = buildFastMenuRead(paramName, waitSec);
+  return `${audio}&${read}`;
+}
+
 /**
  * מייצרת פקודה פנימית מיוחדת בתוך ה-API שמעבירה את המצב (Screen)
  * ללא שימוש ב-go_to_folder של ימות המשיח. ה-API מחזיר קריאה חוזרת ישירה לאותה שלוחה.
@@ -465,8 +471,8 @@ module.exports = async (req, res) => {
   )
   +
   '&api_add_screen=main'
-);
-
+  );
+}
     // ===== מסך פוסטים אחרונים מהפורום =====
     if (currentScreen === 'recent') {
       console.log('[Screen Render] Fetching recent posts...');

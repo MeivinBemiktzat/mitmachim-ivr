@@ -7,7 +7,14 @@
 // תמיכה מלאה בקטיעת שמע (Barge-in) והקשה תוך כדי דיבור.
 // ============================================================================
 
-// ייבוא משתני סביבה והגדרות קבועים
+import express from 'express';
+import fetch from 'node-fetch';
+
+const app = express();
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// משתני סביבה והגדרות קבועים
 const FORUM_URL = (process.env.FORUM_URL || 'https://mitmachim.top').replace(/\/+$/, '');
 const MAX_TITLE_CHARS = 350;   // הגבלת אורך מקסימלי לכותרת נושא עבור TTS
 const MAX_BODY_CHARS  = 980;   // הגבלת אורך מקסימלי לגוף הודעה עבור TTS כדי למנוע קריסה בשורות ארוכות
@@ -16,728 +23,588 @@ const DEFAULT_TIMEOUT = 8000;  // זמן המתנה מוגדר מראש לקרי
 /**
  * פונקציה לביצוע בקשות HTTP בצורה בטוחה ומאובטחת מול ה-Read API של הפורום.
  * מוסיפה תמיד את הסיומת /api לנתיבי המערכת ומעבדת את תגובת ה-JSON.
- * כוללת טיפול מקיף בשגיאות רשת ומצבי קצה.
- * * @param {string} path הנתיב המבוקש בפורום
- * @} returns {Promise<Object>} תגובת ה-JSON של השרת
  */
-async function nbFetch(path) {
-  const url = FORUM_URL + '/api' + path;
-  
-  // הגדרת קונטרולר לניהול זמני תפוגה של הבקשה (Timeout)
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT);
-  
-  try {
-    const res = await fetch(url, {
-      method: 'GET',
-      signal: controller.signal,
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'yemot-nodebb-bridge-advanced-ivr/2.0',
-        'Cache-Control': 'no-cache'
-      }
-    });
+async function fetchFromForum(apiPath) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT);
     
-    clearTimeout(timeoutId);
+    // ניקוי נתיבים כפולים אם קיימים
+    const cleanPath = apiPath.startsWith('/') ? apiPath : `/${apiPath}`;
+    const targetUrl = `${FORUM_URL}/api${cleanPath}`;
     
-    if (!res.ok) {
-      console.error(`[NodeBB Error] HTTP Status ${res.status} for path: ${path}`);
-      throw new Error(`NodeBB HTTP ${res.status}`);
+    try {
+        const response = await fetch(targetUrl, {
+            signal: controller.signal,
+            headers: {
+                'User-Agent': 'Mitmachim-IVR-Gateway/2.0 (Node.js)'
+            }
+        });
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+            console.error(`[Forum API Error] Status ${response.status} on path ${cleanPath}`);
+            return null;
+        }
+        
+        return await response.json();
+    } catch (error) {
+        clearTimeout(timeoutId);
+        console.error(`[Forum Fetch Exception] Path: ${cleanPath}, Error:`, error.message);
+        return null;
     }
+}
+
+/**
+ * פונקציית עזר לניקוי טקסט עשיר וסימני HTML/Markdown כדי להתאים אותו בצורה מושלמת לרובוט TTS קולי.
+ * מנקה תגיות HTML, קישורים, קוד, סמלים מיוחדים ורווחים כפולים.
+ */
+function cleanTextForTTS(rawText) {
+    if (!rawText) return '';
     
-    const data = await res.json();
-    if (!data) {
-      throw new Error('Empty JSON response received from forum API');
-    }
-    return data;
-  } catch (error) {
-    clearTimeout(timeoutId);
-    console.error(`[Fetch Exception] Failed to retrieve data from ${url}. Details:`, error.message);
-    throw error;
-  }
+    let text = String(rawText);
+    
+    // הסרת תגיות HTML קלאסיות
+    text = text.replace(/<[^>]*>/g, ' ');
+    
+    // הסרת קישורי Markdown בלוקים [טקסט](קישור) -> משאיר רק את הטקסט
+    text = text.replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1');
+    
+    // הסרת בלוקים של קוד וציטוטים מורחבים
+    text = text.replace(/```[\s\S]*?```/g, ' [קוד מחשב] ');
+    text = text.replace(/`([^`]+)`/g, '$1');
+    
+    // החלפת תווים בעייתיים בימות המשיח המפריעים למחרוזות (כמו גרש, מרכאות וסימני אחוז)
+    text = text.replace(/'/g, "''");
+    text = text.replace(/"/g, "''");
+    text = text.replace(/%/g, ' אחוז ');
+    text = text.replace(/&/g, ' ו ');
+    text = text.replace(/\^/g, ' ');
+    text = text.replace(/\*/g, ' ');
+    
+    // החלפת קיצורים נפוצים להקראה חלקה יותר
+    text = text.replace(/\bוואטסאפ\b/gi, 'ווצאפ');
+    text = text.replace(/\bF21\b/gi, 'אף 21');
+    text = text.replace(/\bQIN\b/gi, 'קין');
+    text = text.replace(/\bS1\b/gi, 'אס 1');
+    
+    // צמצום רווחים כפולים ושורות חדשות
+    text = text.replace(/\s+/g, ' ').trim();
+    
+    return text;
 }
 
 /**
- * פונקציית עזר מתקדמת לניקוי קוד HTML מקיף, הסרת תגיות, סגנונות, סקריפטים וציטוטים.
- * מכינה את הטקסט בצורה אופטימלית להקראה במנוע ה-TTS של ימות המשיח.
- * מסירה תווים מיוחדים שעלולים לשבש את הפרוטוקול של ימות המשיח (כמו נקודות, מקפים, סימני שרשור).
- * * @param {string} html טקסט גולמי המכיל HTML מהפורום
- * @returns {string} טקסט נקי לחלוטין מותאם להקראה טלפונית
+ * מחולל רשימת קבצים וטקסטים במבנה הרשמי של ימות המשיח (id_list_message)
+ * מקבל מערך של מחרוזות או קבצים ומחזיר פורמט משורשר של t-Text או f-File
  */
-function cleanText(html) {
-  if (!html) return '';
-  let text = String(html);
-  
-  // שלב א: הסרת אלמנטים שאינם רלוונטיים להקראה קולית
-  text = text.replace(/<style[\s\S]*?<\/style>/gi, ' ');
-  text = text.replace(/<script[\s\S]*?<\/script>/gi, ' ');
-  text = text.replace(/<blockquote[\s\S]*?<\/blockquote>/gi, ' '); // הסרת ציטוטים ותגובות קודמות
-  text = text.replace(/<code[\s\S]*?<\/code>/gi, ' קוד מוגן '); // חסימת קטעי קוד ארוכים שמחרבים הקראה
-  
-  // שלב ב: המרת תגיות מבנה לסימני פיסוק הגיוניים להקראה
-  text = text.replace(/<br\s*\/?>/gi, ' ');
-  text = text.replace(/<\/p>/gi, '. ');
-  text = text.replace(/<\/div>/gi, '. ');
-  text = text.replace(/<\/li>/gi, '. ');
-  text = text.replace(/<\/h[1-6]>/gi, '. ');
-  
-  // שלב ג: הסרת כל שאר תגיות ה-HTML שנותרו במחרוזת
-  text = text.replace(/<[^>]+>/g, ' ');
-  
-  // שלב ד: המרת ישויות HTML נפוצות לטקסט רגיל או תווים בעברית
-  text = text.replace(/&nbsp;/gi, ' ');
-  text = text.replace(/&amp;/gi, ' ו ');
-  text = text.replace(/&quot;/gi, ' ');
-  text = text.replace(/&#39;|&apos;/gi, ' ');
-  text = text.replace(/&lt;/gi, ' ').replace(/&gt;/gi, ' ');
-  
-  // שלב ה: הסרת קישורי אינטרנט מלאים והחלפתם במילה "קישור"
-  text = text.replace(/https?:\/\/\S+/gi, ' קישור המערכת ');
-  
-  // שלב ו: ניקוי תווים מיוחדים שמשבשים את הפרוטוקול של ימות המשיח (חשוב מאוד עבור מפרידי פקודות)
-  text = text.replace(/[ _+=*#@^~`|<>\\\/\[\]{}]+/g, ' ');
-  
-  // שלב ז: צמצום רווחים כפולים ורווחי קצוות
-  text = text.replace(/\s+/g, ' ').trim();
-  
-  return text;
+function generateIdList(partsArray) {
+    if (!partsArray || partsArray.length === 0) return '';
+    return `id_list_message=${partsArray.join('.')}`;
 }
 
 /**
- * חותכת את הטקסט הנקי לפי המגבלה שהוגדרה מראש כדי למנוע עומס על שרת ה-TTS.
- * * @param {string} text טקסט המקור
- * @param {number} max אורך מקסימלי מותר
- * @returns {string} טקסט מנוקה וחתוך
+ * הלב של הארכיטקטורה המהירה - בניית פקודת ה-Read של ימות המשיח.
+ * מגדיר את הפרמטר השני כ-'no' כדי למנוע את הודעת "לאישור הקישו 1".
+ * מאפשר קטיעה מהירה תוך כדי דיבור (Barge-in).
+ * * @param {string} variableName - שם המשתנה שיחזור בבקשה הבאה
+ * @param {number} maxDigits - כמות ספרות מקסימלית להקשה (למשל 1 לתפריט, 9 לנושאים)
+ * @param {number} timeout - זמן המתנה להקשה בשניות (דיפולט 7)
  */
-function ttsCut(text, max) {
-  const cleaned = cleanText(text);
-  if (cleaned.length <= max) return cleaned;
-  return cleaned.slice(0, max) + ' ';
-}
-
-/**
- * ממירה חותמת זמן (Timestamp) לביטוי מילולי בעברית המובן היטב בשמיעה טלפונית.
- * * @param {number|string} ts חותמת זמן מילישניות
- * @returns {string} ביטוי זמן בעברית
- */
-function timeAgo(ts) {
-  if (!ts) return '';
-  const diff = Date.now() - Number(ts);
-  const minutes = Math.floor(diff / 60000);
-  
-  if (minutes < 1) return 'לפני פחות מדקה';
-  if (minutes < 60) return 'לפני ' + minutes + ' דקות';
-  
-  const hours = Math.floor(minutes / 60);
-  if (hours === 1) return 'לפני שעה';
-  if (hours === 2) return 'לפני שעתיים';
-  if (hours < 24) return 'לפני ' + hours + ' שעות';
-  
-  const days = Math.floor(hours / 24);
-  if (days === 1) return 'אתמול';
-  if (days === 2) return 'לפני יומיים';
-  if (days < 30) return 'לפני ' + days + ' ימים';
-  
-  const months = Math.floor(days / 30);
-  if (months === 1) return 'לפני חודש';
-  if (months === 2) return 'לפני חודשיים';
-  if (months < 12) return 'לפני ' + months + ' חודשים';
-  
-  return 'לפני יותר משנה';
-}
-
-/**
- * בונה מחרוזת פקודה חוקית מסוג id_list_message עבור ימות המשיח.
- * מקבלת מערך של חלקי טקסט, מנקה אותם ומחברת אותם עם מפריד נקודה (.).
- * * @param {string[]} parts מערך של משפטים להשמעה
- * @returns {string} מחרוזת id_list_message מוכנה לשרשור
- */
-function idList(parts) {
-  const safeParts = parts
-    .filter(p => p && String(p).trim() !== '')
-    .map(p => {
-      let cleaned = String(p)
-        .replace(/[.\-]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-      return 't-' + cleaned;
-    });
-  
-  if (safeParts.length === 0) return '';
-  return 'id_list_message=' + safeParts.join('.');
-}
-
-/**
- * פונקציה אסטרטגית לייצור תפריט מהיר פנימי בתוך ה-API עצמו.
- * הפונקציה מחזירה פקודת קלט (read) מוגדרת היטב שמאלצת את ימות המשיח לקלוט ספרה אחת בלבד
- * ללא בקשת אישור קולי וללא "לאישור הקישו 1". היא משתמשת בהודעה קצרה מאוד של "אנא הקישו"
- * כדי לאפשר למשתמש להקיש מיד, בעוד שהתוכן המרכזי של התפריט מושמע דרך ה-id_list_message שקדם לו.
- * * @param {string} paramName שם הפרמטר שיחזור מהמערכת (למשל mainsel)
- * @param {number} waitSec זמן המתנה למקש בשניות (ברירת מחדל 7)
- * @returns {string} פקודת read משורשרת התואמת לתפריט פנימי מהיר
- */
-function buildFastMenuRead(paramName, waitSec = 7, parts = []) {
-  const cleanedParts = parts
-    .filter(p => p && String(p).trim() !== '')
-    .map(p => {
-      return 't-' + String(p)
-        .replace(/[.\-]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-    });
-
-  cleanedParts.push('t-אנא הקישו בחירה');
-
-  const message = cleanedParts.join('.');
-
-  return `read=${message}=${paramName},no,1,1,${waitSec},Digits,no,no`;
-}
-
-function buildInteractiveRead(paramName, parts, waitSec = 7) {
-
-  const cleanedParts = parts
-    .filter(p => p && String(p).trim() !== '')
-    .map(p => {
-      return 't-' + String(p)
-        .replace(/[.\-]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-    });
-
-  cleanedParts.push('t-אנא הקישו בחירה');
-
-  return `read=${cleanedParts.join('.')}=${paramName},no,1,1,${waitSec},Digits,no,no`;
-}
-
-/**
- * מייצרת פקודה פנימית מיוחדת בתוך ה-API שמעבירה את המצב (Screen)
- * ללא שימוש ב-go_to_folder של ימות המשיח. ה-API מחזיר קריאה חוזרת ישירה לאותה שלוחה.
- * * @param {string} targetScreen שם המסך הבא אליו אנו מנתבים בקוד
- * @param {string} extraParams פרמטרים נוספים לשרשור במידת הצורך
- * @returns {string} פקודת שרשור פנימית המדמה מעבר מסך מהיר
- */
-function internalRedirect(targetScreen, extraParams = '') {
-  let url = `&api_add_screen=${targetScreen}`;
-  if (extraParams) {
-    url += extraParams;
-  }
-  // אנו משתמשים בטריק הבא: אנו מחזירים פקודת read ריקה או קצרה שתעביר מיד את השליטה חזרה לשרת עם המסך החדש
-  // או שאנו סומכים על כך שהקריאה הנוכחית משנה את הפרמטר ומריצה מחדש
-  return url;
+function buildFastMenuRead(variableName, maxDigits = 1, timeout = 7) {
+    // פורמט: read=הודעה=משתנה,אישור_הקשה,מקסימום_ספרות,מינימום_ספרות,זמן_המתנה,סוג_הקשה
+    // הגדרת הודעה כריק ("") מכיוון שהתוכן כבר מושמע בתוך ה-id_list_message שקודם לו, מה שמאפשר קטיעה חלקה.
+    return `read==${variableName},no,${maxDigits},1,${timeout},Digits,no,no`;
 }
 
 // ============================================================================
-// בניית פונקציות להצגת המסכים והתפריטים השונים (הפקת רשימות טקסט)
+// נתיב ה-API המרכזי - מטפל בכל בקשות ה-IVR המגיעות מימות המשיח
+// ============================================================================
+app.all('/api', async (res, req) => {
+    // תמיכה בשליפת פרמטרים גם מ-GET וגם מ-POST
+    const query = { ...res.query, ...res.body };
+    
+    // שליפת נתוני השיחה הבסיסיים מימות המשיח
+    const callId = query.ApiCallId || 'unknown';
+    const phone = query.ApiPhone || 'unknown';
+    const currentScreen = query.screen || 'main';
+    
+    console.log(`[Call ${callId}] Phone: ${phone} | Screen: ${currentScreen}`);
+
+    try {
+        // ====================================================================
+        // מסך 1: תפריט ראשי (Main Menu)
+        // ====================================================================
+        if (currentScreen === 'main') {
+            const userSelection = query.mainsel;
+            
+            // אם המשתמש עדיין לא בחר כלום, נשמיע את הודעת הפתיחה והתפריט הראשי
+            if (!userSelection) {
+                const welcomePrompts = [
+                    't-ברוכים הבאים לפורום מתמחים טופ הטלפוני.',
+                    't-כאן תוכלו להאזין לפוסטים והנושאים האחרונים שנוצרו בפורום מתמחים טופ.',
+                    't-לכניסה לפוסטים האחרונים הקישו 1.',
+                    't-לשמיעת הנושאים האחרונים שנפתחו הקישו 2.',
+                    't-לכניסה לפי קטגוריות הפורום הקישו 3.'
+                ];
+                
+                const audioOutput = generateIdList(welcomePrompts);
+                const readCommand = buildFastMenuRead('mainsel', 1, 10);
+                
+                return req.send(`${audioOutput}&${readCommand}&api_add_screen=main`);
+            }
+            
+            // עיבוד בחירת המשתמש מהתפריט הראשי
+            switch (userSelection) {
+                case '1': // מעבר לפוסטים אחרונים
+                    return await renderRecentPostsScreen(req, query);
+                case '2': // מעבר לנושאים חדשים
+                    return await renderNewTopicsScreen(req, query);
+                case '3': // מעבר לתפריט קטגוריות
+                    return await renderCategoriesMenuScreen(req, query);
+                default: // הקשה שגויה - רענון התפריט הראשי עם הודעת שגיאה קצרה
+                    const errorPrompts = [
+                        't-הקשה שגויה.',
+                        't-לכניסה לפוסטים האחרונים הקישו 1.',
+                        't-לשמיעת הנושאים האחרונים שנפתחו הקישו 2.',
+                        't-לכניסה לפי קטגוריות הפורום הקישו 3.'
+                    ];
+                    return req.send(`${generateIdList(errorPrompts)}&${buildFastMenuRead('mainsel', 1, 8)}&api_add_screen=main`);
+            }
+        }
+
+        // ====================================================================
+        // מסך 2: פוסטים אחרונים (Recent Posts Menu)
+        // ====================================================================
+        if (currentScreen === 'recent') {
+            const postSelection = query.recentsel;
+            const savedTidsString = query.tids || '';
+            
+            if (!postSelection) {
+                return await renderRecentPostsScreen(req, query);
+            }
+            
+            // חזרה לתפריט ראשי
+            if (postSelection === '0') {
+                return req.send(`api_add_screen=main&mainsel=`);
+            }
+            
+            // רענון הרשימה הנוכחית
+            if (postSelection === '*') {
+                return await renderRecentPostsScreen(req, query);
+            }
+            
+            // כניסה לנושא ספציפי מתוך הרשימה על בסיס מפתח ה-TIDs השמור
+            const tidsArray = savedTidsString.split('>');
+            const index = parseInt(postSelection, 10) - 1;
+            
+            if (index >= 0 && index < tidsArray.length) {
+                const targetTopicId = tidsArray[index];
+                // העברה פנימית למסך האזנה לנושא
+                return await renderTopicReaderScreen(req, targetTopicId, 1, 0);
+            }
+            
+            // בחירה לא תקינה ברשימה
+            const invalidListPrompts = [
+                't-המספר שהוקש אינו ברשימה.',
+                't-אנא נסו שנית או הקישו אפס לחזרה.'
+            ];
+            const readCommand = buildFastMenuRead('recentsel', 1, 7);
+            return req.send(`${generateIdList(invalidListPrompts)}&${readCommand}&api_add_screen=recent&api_add_tids=${savedTidsString}`);
+        }
+
+        // ====================================================================
+        // מסך 3: נושאים חדשים (New Topics Menu)
+        // ====================================================================
+        if (currentScreen === 'topics') {
+            const topicSelection = query.topicsel;
+            const savedTidsString = query.tids || '';
+            
+            if (!topicSelection) {
+                return await renderNewTopicsScreen(req, query);
+            }
+            
+            if (topicSelection === '0') {
+                return req.send(`api_add_screen=main&mainsel=`);
+            }
+            
+            if (topicSelection === '*') {
+                return await renderNewTopicsScreen(req, query);
+            }
+            
+            const tidsArray = savedTidsString.split('>');
+            const index = parseInt(topicSelection, 10) - 1;
+            
+            if (index >= 0 && index < tidsArray.length) {
+                const targetTopicId = tidsArray[index];
+                return await renderTopicReaderScreen(req, targetTopicId, 1, 0);
+            }
+            
+            const invalidPrompts = ['t-בחירה שגויה.', 't-אנא בחרו מספר מהרשימה או הקישו אפס.'];
+            return req.send(`${generateIdList(invalidPrompts)}&${buildFastMenuRead('topicsel', 1, 7)}&api_add_screen=topics&api_add_tids=${savedTidsString}`);
+        }
+
+        // ====================================================================
+        // מסך 4: קטגוריות ראשיות (Categories Menu)
+        // ====================================================================
+        if (currentScreen === 'categories') {
+            const categorySelection = query.catsel;
+            const savedCidsString = query.cids || '';
+            
+            if (!categorySelection) {
+                return await renderCategoriesMenuScreen(req, query);
+            }
+            
+            if (categorySelection === '0') {
+                return req.send(`api_add_screen=main&mainsel=`);
+            }
+            
+            const cidsArray = savedCidsString.split('>');
+            const index = parseInt(categorySelection, 10) - 1;
+            
+            if (index >= 0 && index < cidsArray.length) {
+                const targetCategoryId = cidsArray[index];
+                // מעבר למסך רשימת נושאים בתוך הקטגוריה שנבחרה
+                return await renderCategoryTopicsScreen(req, targetCategoryId, 1);
+            }
+            
+            const invalidPrompts = ['t-קטגוריה לא קיימת.', 't-נסו שנית.'];
+            return req.send(`${generateIdList(invalidPrompts)}&${buildFastMenuRead('catsel', 1, 7)}&api_add_screen=categories&api_add_cids=${savedCidsString}`);
+        }
+
+        // ====================================================================
+        // מסך 5: רשימת נושאים בתוך קטגוריה (Category Topics List)
+        // ====================================================================
+        if (currentScreen === 'category_view') {
+            const selection = query.cattopicsel;
+            const currentCategoryId = query.cid_active;
+            const currentPage = parseInt(query.page_active || '1', 10);
+            const savedTidsString = query.tids || '';
+            
+            if (!selection) {
+                return await renderCategoryTopicsScreen(req, currentCategoryId, currentPage);
+            }
+            
+            if (selection === '0') {
+                return req.send(`api_add_screen=categories&catsel=`);
+            }
+            
+            // עמוד הבא בקטגוריה
+            if (selection === '9') {
+                return await renderCategoryTopicsScreen(req, currentCategoryId, currentPage + 1);
+            }
+            
+            // עמוד קודם בקטגוריה
+            if (selection === '7' && currentPage > 1) {
+                return await renderCategoryTopicsScreen(req, currentCategoryId, currentPage - 1);
+            }
+            
+            const tidsArray = savedTidsString.split('>');
+            const index = parseInt(selection, 10) - 1;
+            
+            if (index >= 0 && index < tidsArray.length) {
+                const targetTopicId = tidsArray[index];
+                return await renderTopicReaderScreen(req, targetTopicId, 1, 0);
+            }
+            
+            return await renderCategoryTopicsScreen(req, currentCategoryId, currentPage);
+        }
+
+        // ====================================================================
+        // מסך 6: נגן והאזנה לפוסטים בתוך נושא (Topic Reader & Navigation)
+        // ====================================================================
+        if (currentScreen === 'topic') {
+            const navigationDigit = query.topicnav;
+            const topicId = query.api_add_tid;
+            const currentPage = parseInt(query.api_add_page || '1', 10);
+            const currentPostIndex = parseInt(query.api_add_pindex || '0', 10);
+            
+            if (!navigationDigit) {
+                return await renderTopicReaderScreen(req, topicId, currentPage, currentPostIndex);
+            }
+            
+            // חזרה לתפריט הקודם (כאן נחזיר לברירת המחדל - נושאים אחרונים)
+            if (navigationDigit === '0') {
+                return req.send(`api_add_screen=main&mainsel=`);
+            }
+            
+            // מעבר לפוסט הבא בדיון
+            if (navigationDigit === '1') {
+                return await renderTopicReaderScreen(req, topicId, currentPage, currentPostIndex + 1);
+            }
+            
+            // מעבר לפוסט הקודם בדיון
+            if (navigationDigit === '2' && currentPostIndex > 0) {
+                return await renderTopicReaderScreen(req, topicId, currentPage, currentPostIndex - 1);
+            }
+            
+            // שמיעה חוזרת ומורחבת של פרטי הפוסט המלאים
+            if (navigationDigit === '3') {
+                return await renderTopicReaderScreen(req, topicId, currentPage, currentPostIndex, true);
+            }
+            
+            // אם הוקש מקש לא נתמך, ננגן שוב את הפוסט הנוכחי
+            return await renderTopicReaderScreen(req, topicId, currentPage, currentPostIndex);
+        }
+
+        // הגנת קצה - תפריט ראשי כברירת מחדל אולטימטיבית
+        return req.send(`api_add_screen=main&mainsel=`);
+
+    } catch (globalError) {
+        console.error('[Global Emergency Fallback Error]:', globalError);
+        const systemErrorAudio = generateIdList(['t-חלה שגיאה במערכת, אנא נסו שנית מאוחר יותר.']);
+        return req.send(`${systemErrorAudio}&api_add_screen=main&mainsel=`);
+    }
+});
+
+// ============================================================================
+// פונקציות עזר עצמאיות לבניית ורינדור המסכים (Controllers)
 // ============================================================================
 
 /**
- * בונה את רשימת המשפטים להשמעת רשימת נושאים מהפורום.
- * * @param {Array} topics מערך הנושאים שהתקבל מה-API
- * @param {string} headerText כותרת הפתיחה של המסך
- * @param {string} footerText הודעת הסיום והניווט
- * @returns {string[]} מערך משפטים מוכן עבור idList
+ * מאחזר ומציג את רשימת הפוסטים האחרונים בפורום
  */
-function buildTopicListParts(topics, headerText, footerText) {
-  const parts = [];
-  if (headerText) parts.push(headerText);
-  
-  if (!topics || topics.length === 0) {
-    parts.push('לא נמצאו נושאים להצגה כעת במערכת.');
-    return parts;
-  }
-  
-  topics.forEach((tp, i) => {
-    const num = i + 1;
-    const title = ttsCut(tp.title, MAX_TITLE_CHARS);
-    const username = tp.user && tp.user.username ? tp.user.username : 'משתמש אנונימי';
+async function renderRecentPostsScreen(res, query) {
+    const data = await fetchFromForum('/recent');
+    if (!data || !data.topics || data.topics.length === 0) {
+        const noDataAudio = generateIdList(['t-לא ניתן למשוך פוסטים אחרונים כעת.', 't-חוזר לתפריט הראשי.']);
+        return res.send(`${noDataAudio}&api_add_screen=main&mainsel=`);
+    }
+
+    const audioParts = ['t-הפוסטים האחרונים בפורום.'];
+    const tidsArray = [];
     
-    parts.push(`לנושא מספר ${num}`);
-    parts.push(title);
-    parts.push(`מאת ${username}`);
-    parts.push(`הקישו ${num}`);
-  });
-  
-  if (footerText) parts.push(footerText);
-  return parts;
+    // ניקח מקסימום 9 נושאים כדי להתאים למקשים 1 עד 9 בשלט הטלפון
+    const itemsCount = Math.min(data.topics.length, 9);
+    for (let i = 0; i < itemsCount; i++) {
+        const topic = data.topics[i];
+        const indexNumber = i + 1;
+        const cleanTitle = cleanTextForTTS(topic.title).substring(0, MAX_TITLE_CHARS);
+        const cleanAuthor = cleanTextForTTS(topic.user ? topic.user.username : 'מערכת');
+        
+        audioParts.push(`t-לנושא מספר ${indexNumber}.`);
+        audioParts.push(`t-${cleanTitle}.`);
+        audioParts.push(`t-מאת ${cleanAuthor}.`);
+        audioParts.push(`t-הקישו ${indexNumber}.`);
+        
+        tidsArray.push(topic.tid);
+    }
+    
+    audioParts.push('t-לרענון רשימה זו הקישו כוכבית. לחזרה לתפריט הראשי הקישו אפס בכל עת.');
+    
+    const audioOutput = generateIdList(audioParts);
+    const readCommand = buildFastMenuRead('recentsel', 1, 9);
+    const tidsString = tidsArray.join('>');
+    
+    return res.send(`${audioOutput}&${readCommand}&api_add_tids=${tidsString}&api_add_screen=recent`);
 }
 
 /**
- * בונה את רשימת המשפטים להשמעת רשימת קטגוריות מהפורום.
- * * @param {Array} cats מערך קטגוריות
- * @param {string} headerText כותרת פתיחה
- * @returns {string[]} מערך משפטים מוכן
+ * מאחזר ומציג את רשימת הנושאים החדשים ביותר שנפתחו
  */
-function buildCategoryListParts(cats, headerText) {
-  const parts = [];
-  if (headerText) parts.push(headerText);
-  
-  if (!cats || cats.length === 0) {
-    parts.push('לא נמצאו קטגוריות זמינות במערכת.');
-    return parts;
-  }
-  
-  cats.forEach((c, i) => {
-    const num = i + 1;
-    const name = cleanText(c.name);
-    parts.push(`לקטגוריה מספר ${num}`);
-    parts.push(name);
-    parts.push(`הקישו ${num}`);
-  });
-  
-  parts.push('לחזרה לתפריט הראשי בכל עת הקישו אפס.');
-  return parts;
-}
+async function renderNewTopicsScreen(res, query) {
+    // ב-NodeBB קבלת הנושאים החדשים מתבצעת לרוב על ידי פרמטר מיון או נתיב ייעודי
+    const data = await fetchFromForum('/recent?sort=newest');
+    if (!data || !data.topics || data.topics.length === 0) {
+        const noDataAudio = generateIdList(['t-לא ניתן למשוך נושאים חדשים.', 't-חוזר לתפריט הראשי.']);
+        return res.send(`${noDataAudio}&api_add_screen=main&mainsel=`);
+    }
 
-// ============================================================================
-// פונקציית הראוטר המרכזית (ה-Serverless Handler של Vercel)
-// ============================================================================
-
-module.exports = async (req, res) => {
-  // קביעת כותרות מענה התואמות לחלוטין את הקידוד של ימות המשיח
-  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-
-  // איחוד ומיזוג כלל הפרמטרים הנכנסים מתוך בקשות GET או POST מהמערכת הטלפונית
-  const queryData = Object.assign({}, req.query || {});
-  if (req.body && typeof req.body === 'object') {
-    Object.assign(queryData, req.body);
-  }
-
-  // הדפסת לוג פנימי לצורכי דיבאג ומעקב בשרת ורסל
-  console.log(`[IVR Request] Screen: ${queryData.screen}, Mainsel: ${queryData.mainsel}, Full Query:`, JSON.stringify(queryData));
-
-  // שליפת מצב המסך הנוכחי מתוך הפרמטרים (ברירת מחדל היא main)
-  let currentScreen = queryData.screen || 'main';
-
-  if (queryData.api_add_screen) {
-  currentScreen = queryData.api_add_screen;
-}
-
-if (queryData.api_add_tid) {
-  queryData.tid = queryData.api_add_tid;
-}
-
-if (queryData.api_add_tids) {
-  queryData.api_add_tids = queryData.api_add_tids;
-}
-
-if (queryData.api_add_cids) {
-  queryData.api_add_cids = queryData.api_add_cids;
-}
-
-if (queryData.api_add_page) {
-  queryData.page = queryData.api_add_page;
-}
-
-if (queryData.api_add_cid) {
-  queryData.cid = queryData.api_add_cid;
-}
-
-  try {
-    // ------------------------------------------------------------------------
-    // שלב א': טיפול ועיבוד של הקשות משתמש אקטיביות (עדיפות עליונה למניעת לופים)
-    // ------------------------------------------------------------------------
+    const audioParts = ['t-הנושאים החדשים ביותר שנפתחו בפורום.'];
+    const tidsArray = [];
     
-    // 1. עיבוד בחירה מהתפריט הראשי
-    if (queryData.mainsel !== undefined && queryData.mainsel !== '') {
-      const selection = String(queryData.mainsel).trim();
-      console.log(`[Menu Process] User pressed ${selection} on Main Menu`);
-      
-      if (selection === '1') {
-        currentScreen = 'recent';
-      } else if (selection === '2') {
-        currentScreen = 'topics';
-      } else if (selection === '3') {
-        currentScreen = 'categories';
-      } else {
-        // הקשה שגויה בתפריט הראשי - נשמיע הודעת שגיאה ונציג שוב את התפריט הראשי
-        const errorMsg = idList(['המקש שהוקש שגוי, אנא נסו שנית.']);
-        const mainMenu = idList([
-          'ברוכים הבאים לפורום מתמחים טופ.',
-          'לכניסה לפוסטים האחרונים הקישו 1.',
-          'לשמיעת הנושאים האחרונים שנפתחו הקישו 2.',
-          'לכניסה לפי קטגוריות הקישו 3.'
-        ]);
-        const readCmd = buildFastMenuRead('mainsel', 7);
-        return res.send(`${errorMsg}.${mainMenu}&${readCmd}&api_add_screen=main`);
-      }
-    }
-
-    // 2. עיבוד בחירה מתוך מסך פוסטים אחרונים (recent)
-    if (queryData.recentsel !== undefined && queryData.recentsel !== '') {
-      const selection = String(queryData.recentsel).trim();
-      console.log(`[Menu Process] User pressed ${selection} on Recent Topics`);
-      
-      if (selection === '0') {
-        currentScreen = 'main';
-      } else if (selection === '*') {
-        currentScreen = 'recent';
-      } else {
-        const index = parseInt(selection, 10) - 1;
-        const topicIds = String(queryData.api_add_tids || '').split('>').filter(x => x);
+    const itemsCount = Math.min(data.topics.length, 9);
+    for (let i = 0; i < itemsCount; i++) {
+        const topic = data.topics[i];
+        const indexNumber = i + 1;
+        const cleanTitle = cleanTextForTTS(topic.title).substring(0, MAX_TITLE_CHARS);
+        const cleanAuthor = cleanTextForTTS(topic.user ? topic.user.username : 'מערכת');
         
-        if (!isNaN(index) && index >= 0 && index < topicIds.length) {
-          // העברה ישירה למסך שמיעת הנושא בתוך אותו ה-API ללא שימוש ב-go_to_folder!
-          return res.send(
-`read=t-טוען נושא=dummy,no,1,1,1,Digits,no,no&api_add_tid=${topicIds[index]}&api_add_page=0&api_add_screen=topic`
-);
-        } else {
-          // הקשה שגויה ברשימת נושאים אחרונים
-          const errorMsg = idList(['בחירה לא תקינה.']);
-          return res.send(`${errorMsg}&api_add_screen=recent&read=t-אנא הקישו שוב=dummy,no,1,1,1,Digits,no,no`);
-        }
-      }
-    }
-
-    // 3. עיבוד בחירה מתוך מסך נושאים חדשים (topics)
-    if (queryData.topicsel !== undefined && queryData.topicsel !== '') {
-      const selection = String(queryData.topicsel).trim();
-      console.log(`[Menu Process] User pressed ${selection} on Newest Topics`);
-      
-      if (selection === '0') {
-        currentScreen = 'main';
-      } else {
-        const index = parseInt(selection, 10) - 1;
-        const topicIds = String(queryData.api_add_tids || '').split('>').filter(x => x);
+        audioParts.push(`t-לנושא מספר ${indexNumber}.`);
+        audioParts.push(`t-${cleanTitle}.`);
+        audioParts.push(`t-מאת ${cleanAuthor}.`);
+        audioParts.push(`t-הקישו ${indexNumber}.`);
         
-        if (!isNaN(index) && index >= 0 && index < topicIds.length) {
-          return res.send(
-`read=t-מיד נשמע את הנושא=dummy,no,1,1,1,Digits,no,no&api_add_tid=${topicIds[index]}&api_add_page=0&api_add_screen=topic`
-);
-        } else {
-          const errorMsg = idList(['בחירה לא תקינה.']);
-          return res.send(`${errorMsg}&api_add_screen=topics&read=t-אנא הקישו שוב=dummy,no,1,1,1,Digits,no,no`);
-        }
-      }
+        tidsArray.push(topic.tid);
     }
-
-    // 4. עיבוד בחירה מתוך מסך קטגוריות (categories)
-    if (queryData.catsel !== undefined && queryData.catsel !== '') {
-      const selection = String(queryData.catsel).trim();
-      const currentCid = String(queryData.curcid || '');
-      console.log(`[Menu Process] User pressed ${selection} on Categories Screen`);
-      
-      if (selection === '0') {
-        currentScreen = 'main';
-      } else if (selection === '*' && currentCid) {
-        // מעבר ישיר לשמיעת נושאים בתוך הקטגוריה הנוכחית
-        return res.send(`read=t-טוען נושאים בקטגוריה=dummy,no,1,1,1,Digits,no,no&api_add_cid=${currentCid}&api_add_screen=cattopics`);
-      } else {
-        const index = parseInt(selection, 10) - 1;
-        const categoryIds = String(queryData.api_add_cids || '').split('>').filter(x => x);
-        
-        if (!isNaN(index) && index >= 0 && index < categoryIds.length) {
-          // טעינת תת-קטגוריה או הצגת הנושאים שלה בתוך אותו ה-API
-          return res.send(`read=t-טוען קטגוריה=dummy,no,1,1,1,Digits,no,no&api_add_cid=${categoryIds[index]}&api_add_screen=categories`);
-        } else {
-          const errorMsg = idList(['הקשה שגויה.']);
-          return res.send(`${errorMsg}&api_add_screen=categories${currentCid ? '&api_add_cid=' + currentCid : ''}&read=t-נסו שוב=dummy,no,1,1,1,Digits,no,no`);
-        }
-      }
-    }
-
-    // 5. עיבוד בחירה מתוך נושאים של קטגוריה ספציפית (cattopics)
-    if (queryData.cattopicsel !== undefined && queryData.cattopicsel !== '') {
-      const selection = String(queryData.cattopicsel).trim();
-      if (selection === '0') {
-        currentScreen = 'main';
-      } else {
-        const index = parseInt(selection, 10) - 1;
-        const topicIds = String(queryData.api_add_tids || '').split('>').filter(x => x);
-        
-        if (!isNaN(index) && index >= 0 && index < topicIds.length) {
-          return res.send(`read=t-טוען=dummy,no,1,1,1,Digits,no,no&api_add_tid=${topicIds[index]}&api_add_page=0&api_add_screen=topic`);
-        } else {
-          return res.send(`id_list_message=t-בחירה שגויה&api_add_screen=main&read=t-חוזר לתפריט=dummy,no,1,1,1,Digits,no,no`);
-        }
-      }
-    }
-
-    // 6. ניווט מתוך פוסטים בתוך נושא (topicnav)
-    if (queryData.topicnav !== undefined && queryData.topicnav !== '') {
-      const selection = String(queryData.topicnav).trim();
-      const topicId = String(queryData.tid || '');
-      const currentPage = parseInt(queryData.page || '0', 10);
-      
-      console.log(`[Topic Navigation] User pressed ${selection} on Topic ${topicId}, Page ${currentPage}`);
-      
-      if (selection === '0') {
-        currentScreen = 'main';
-      } else if (selection === '1') {
-        // מעבר לפוסט הבא בנושא
-        return res.send(`api_add_tid=${topicId}&api_add_page=${currentPage + 1}&read=t-הבא=dummy,no,1,1,1,Digits,no,no&api_add_screen=topic`);
-      } else if (selection === '2') {
-        // מעבר לפוסט הקודם (מגבילים שלא יירד מתחת ל-0)
-        const prevPage = currentPage - 1 < 0 ? 0 : currentPage - 1;
-        return res.send(`api_add_tid=${topicId}&api_add_page=${prevPage}&read=t-הקודם=dummy,no,1,1,1,Digits,no,no&api_add_screen=topic`);
-      } else if (selection === '3') {
-        // הצגת פרטים נוספים על הפוסט הנוכחי
-        const details = decodeURIComponent(queryData.details || '').split('|').filter(x => x);
-        const detailsAudio = idList(details);
-        const readCmd = buildFastMenuRead('detback', 6);
-        return res.send(`${detailsAudio}.t-לחזרה לשמיעת ההודעה הקישו 1.&${readCmd}&api_add_tid=${topicId}&api_add_page=${currentPage}&api_add_screen=detback`);
-      } else {
-        // הקשה לא חוקית בניווט פוסטים - נשארים באותו פוסט
-        return res.send(`api_add_tid=${topicId}&api_add_page=${currentPage}&read=t-שגיאה=dummy,no,1,1,1,Digits,no,no&api_add_screen=topic`);
-      }
-    }
-
-    // 7. חזרה מפרטי הודעה (detback)
-    if (queryData.detback !== undefined && queryData.detback !== '') {
-      const topicId = String(queryData.tid || '');
-      const currentPage = parseInt(queryData.page || '0', 10);
-      return res.send(`api_add_tid=${topicId}&api_add_page=${currentPage}&read=t-חוזר=dummy,no,1,1,1,Digits,no,no&api_add_screen=topic`);
-    }
-
-    // 8. טיפול במסך סיום נושא (topicend)
-    if (queryData.topicend !== undefined && queryData.topicend !== '') {
-      const selection = String(queryData.topicend).trim();
-      const topicId = String(queryData.tid || '');
-      
-      if (selection === '1') {
-        return res.send(`api_add_tid=${topicId}&api_add_page=0&read=t-מהתחלה=dummy,no,1,1,1,Digits,no,no&api_add_screen=topic`);
-      } else {
-        currentScreen = 'main';
-      }
-    }
-
-    // ------------------------------------------------------------------------
-    // שלב ב': הפקת המסכים והתפריטים (הצגת המידע לפי משתנה currentScreen)
-    // ------------------------------------------------------------------------
-
-    // ===== מסך תפריט ראשי =====
-    if (currentScreen === 'main') {
-      return res.send(
-  buildInteractiveRead(
-    'mainsel',
-    [
-      'ברוכים הבאים לפורום מתמחים טופ הטלפוני.',
-      'כאן תוכלו להאזין לפוסטים חדשים, נושאים אחרונים ודיונים מהפורום.',
-      'לכניסה לפוסטים האחרונים הקישו 1.',
-      'לשמיעת הנושאים האחרונים שנפתחו הקישו 2.',
-      'לכניסה לפי קטגוריות הקישו 3.'
-    ],
-    7
-  )
-  +
-  '&api_add_screen=main'
-  );
+    
+    audioParts.push('t-לחזרה לתפריט הראשי הקישו אפס בכל עת.');
+    
+    const audioOutput = generateIdList(audioParts);
+    const readCommand = buildFastMenuRead('topicsel', 1, 9);
+    const tidsString = tidsArray.join('>');
+    
+    return res.send(`${audioOutput}&${readCommand}&api_add_tids=${tidsString}&api_add_screen=topics`);
 }
-    // ===== מסך פוסטים אחרונים מהפורום =====
-    if (currentScreen === 'recent') {
-      console.log('[Screen Render] Fetching recent posts...');
-      const data = await nbFetch('/recent');
-      const topics = (data.topics || []).slice(0, 9); // לוקחים מקסימום 9 נושאים כדי שיתאימו למקשים 1-9
-      
-const menuParts = buildTopicListParts(
-  topics,
-  'הנושאים החדשים ביותר שנפתחו בפורום.',
-  'לחזרה לתפריט הראשי הקישו אפס בכל עת.'
-);
 
-const topicIdsString = topics.map(t => t.tid).join(',');
-const readCommand = buildFastMenuRead('recentsel', 9, menuParts);
-
-return res.send(
-`${readCommand}&api_add_screen=recent&api_add_tids=${topicIdsString}`
-);
+/**
+ * מאחזר ומציג את רשימת הקטגוריות הראשיות של הפורום
+ */
+async function renderCategoriesMenuScreen(res, query) {
+    const data = await fetchFromForum('/categories');
+    if (!data || !data.categories || data.categories.length === 0) {
+        const noDataAudio = generateIdList(['t-שירות קטגוריות אינו זמין כעת.']);
+        return res.send(`${noDataAudio}&api_add_screen=main&mainsel=`);
     }
 
-    // ===== מסך נושאים אחרונים שנפתחו =====
-    if (currentScreen === 'topics') {
-      console.log('[Screen Render] Fetching newest topics...');
-      let data;
-      try {
-        // ניסיון למשוך לפי מיון של הנושאים החדשים ביותר שנפתחו
-        data = await nbFetch('/recent?term=alltime&sort=newest');
-      } catch (e) {
-        data = await nbFetch('/recent');
-      }
-      
-      let topics = (data.topics || []);
-      // סידור הנושאים לפי חותמת הזמן של יצירתם בסדר יורד
-      topics = topics.slice().sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0)).slice(0, 9);
-      
-      const menuParts = buildTopicListParts(
-  topics,
-  'נושאים זמינים בקטגוריית ' + cleanText(data.name || '') + '.',
-  'לחזרה לתפריט הראשי הקישו אפס.'
-);
-
-const topicIdsString = topics.map(t => t.tid).join(',');
-const readCommand = buildFastMenuRead('topicsel', 9, menuParts);
-
-return res.send(
-`${readCommand}&api_add_screen=topics&api_add_tids=${topicIdsString}`
-);
-    }
-
-    // ===== מסך קטגוריות ראשיות ותתי-קטגוריות =====
-    if (currentScreen === 'categories') {
-      const cid = queryData.cid ? String(queryData.cid) : '';
-      console.log(`[Screen Render] Loading categories. Parent CID: ${cid || 'None'}`);
-      
-      let categoriesList = [];
-      let headerText = '';
-      
-      if (!cid) {
-        // טעינת רשימת הקטגוריות הראשיות של פורום מתמחים טופ
-        const data = await nbFetch('/categories');
-        categoriesList = (data.categories || []).filter(c => !c.disabled).slice(0, 9);
-        headerText = 'תפריט קטגוריות ראשיות.';
-      } else {
-        // טעינת תתי קטגוריות של הקטגוריה שנבחרה
-        const data = await nbFetch('/category/' + cid);
-        categoriesList = (data.children || []).filter(c => !c.disabled).slice(0, 9);
-        headerText = 'קטגוריית ' + cleanText(data.name || '') + '.';
-      }
-
-      if (categoriesList.length > 0) {
-        const audioList = idList(buildCategoryListParts(categoriesList, headerText));
-        const categoryIdsString = categoriesList.map(c => c.cid).join(',');
+    const audioParts = ['t-קטגוריות הפורום הראשיות.'];
+    const cidsArray = [];
+    
+    // סינון והצגה רק של קטגוריות אב רלוונטיות
+    const rootCategories = data.categories.filter(c => !c.parentCid);
+    const itemsCount = Math.min(rootCategories.length, 9);
+    
+    for (let i = 0; i < itemsCount; i++) {
+        const category = rootCategories[i];
+        const indexNumber = i + 1;
+        const cleanName = cleanTextForTTS(category.name);
         
-        let readPrompt = 't-אנא בחרו מספר קטגוריה';
-        if (cid) {
-          readPrompt += ' או הקישו כוכבית לשמיעת הפוסטים בתוך קטגוריה זו';
-        }
+        audioParts.push(`t-לקטגוריית ${cleanName} הקישו ${indexNumber}.`);
+        cidsArray.push(category.cid);
+    }
+    
+    audioParts.push('t-לחזרה לתפריט הראשי הקישו אפס.');
+    
+    const audioOutput = generateIdList(audioParts);
+    const readCommand = buildFastMenuRead('catsel', 1, 9);
+    const cidsString = cidsArray.join('>');
+    
+    return res.send(`${audioOutput}&${readCommand}&api_add_cids=${cidsString}&api_add_screen=categories`);
+}
+
+/**
+ * מציג רשימת נושאים בתוך קטגוריה ספציפית כולל חלוקה לעמודים (דפדוף)
+ */
+async function renderCategoryTopicsScreen(res, cid, page = 1) {
+    const data = await fetchFromForum(`/category/${cid}?page=${page}`);
+    if (!data || !data.topics || data.topics.length === 0) {
+        const errorAudio = generateIdList(['t-אין נושאים נוספים בקטגוריה זו.', 't-חוזר לתפריט הקטגוריות.']);
+        return res.send(`${errorAudio}&api_add_screen=categories&catsel=`);
+    }
+
+    const categoryName = cleanTextForTTS(data.name || 'הנבחרת');
+    const audioParts = [`t-נושאים בקטגוריית ${categoryName}. עמוד מספר ${page}.`];
+    const tidsArray = [];
+    
+    // מציגים מקסימום 6 נושאים בכל עמוד כדי להשאיר מקשים לניווט דפדוף (7 ו-9)
+    const itemsCount = Math.min(data.topics.length, 6);
+    for (let i = 0; i < itemsCount; i++) {
+        const topic = data.topics[i];
+        const indexNumber = i + 1;
+        const cleanTitle = cleanTextForTTS(topic.title).substring(0, MAX_TITLE_CHARS);
         
-        const menuParts = buildCategoryListParts(categoriesList, headerText);
-
-const readCommand = buildFastMenuRead(
-  'catsel',
-  9,
-  menuParts
-);
-        return res.send(
- `${readCommand}&api_add_cids=${categoryIdsString}&api_add_curcid=${cid}&api_add_screen=categories`
-);
-      } else if (cid) {
-        // אם אין תתי-קטגוריות, נעביר אוטומטית למסך השמעת הנושאים של קטגוריה זו בתוך ה-API
-        return res.send(`api_add_screen=cattopics&api_add_cid=${cid}&read=t-מיד נטען את הנושאים=dummy,no,1,1,1,Digits,no,no`);
-      } else {
-        const noCats = idList(['לא נמצאו קטגוריות זמינות בפורום כרגע.']);
-        return res.send(`${noCats}&api_add_screen=main&read=t-חוזר לתפריט=dummy,no,1,1,1,Digits,no,no`);
-      }
+        audioParts.push(`t-לנושא ${cleanTitle} הקישו ${indexNumber}.`);
+        tidsArray.push(topic.tid);
     }
-
-    // ===== מסך נושאים בתוך קטגוריה ספציפית =====
-    if (currentScreen === 'cattopics') {
-      const cid = String(queryData.cid || '');
-      if (!cid) {
-        return res.send(`api_add_screen=main&read=t-שגיאה חוזר לתפריט=dummy,no,1,1,1,Digits,no,no`);
-      }
-      
-      console.log(`[Screen Render] Loading topics inside category CID: ${cid}`);
-      const data = await nbFetch('/category/' + cid);
-      const topics = (data.topics || []).slice(0, 9);
-      
-const menuParts = buildTopicListParts(
-  topics,
-  'נושאים זמינים בקטגוריה.',
-  'לחזרה לתפריט הראשי הקישו אפס.'
-);
-
-const topicIdsString = topics.map(t => t.tid).join(',');
-
-const readCommand = buildFastMenuRead(
-  'cattopicsel',
-  9,
-  menuParts
-);
-
-return res.send(
-`${readCommand}&api_add_screen=cattopics&api_add_tids=${topicIdsString}`
-);
+    
+    // הוספת לחצני דפדוף קבועים
+    audioParts.push('t-לעמוד הבא הקישו 9.');
+    if (page > 1) {
+        audioParts.push('t-לעמוד הקודם הקישו 7.');
     }
-
-    // ===== מסך שמיעת נושא (השמעת פוסטים והודעות בצורה אינטראקטיבית) =====
-    if (currentScreen === 'topic') {
-      const topicId = String(queryData.tid || '');
-      if (!topicId) {
-        return res.send(`api_add_screen=main&read=t-שגיאת מזהה נושא=dummy,no,1,1,1,Digits,no,no`);
-      }
-      
-      const currentPage = parseInt(queryData.page || '0', 10);
-      console.log(`[Screen Render] Loading topic ID: ${topicId}, post page index: ${currentPage}`);
-      
-      const data = await nbFetch('/topic/' + topicId);
-      const posts = data.posts || [];
-      const topicTitle = ttsCut(data.title, MAX_TITLE_CHARS);
-
-      // בדיקה האם הגענו לסוף הפוסטים הזמינים בנושא זה
-      if (currentPage >= posts.length) {
-        const endMessage = idList([
-          'הגעתם לסוף ההודעות בנושא זה.',
-          'להאזנה חוזרת מההתחלה הקישו 1.',
-          'לחזרה לתפריט הראשי הקישו 0 או כל מקש אחר.'
-        ]);
-        const readCommand = buildFastMenuRead('topicend', 8);
-        return res.send(`${endMessage}&${readCommand}&api_add_tid=${topicId}&api_add_screen=topicend`);
-      }
-
-      // שליפת הפוסט הנוכחי להקראה
-      const currentPost = posts[currentPage];
-      const postBody = ttsCut(currentPost.content, MAX_BODY_CHARS);
-      const authorName = currentPost.user && currentPost.user.username ? currentPost.user.username : 'משתמש הפורום';
-      
-      const audioParts = [];
-      if (currentPage === 0) {
-        audioParts.push('כותרת הנושא היא ' + topicTitle + '.');
-      }
-      
-      audioParts.push(`הודעה מספר ${currentPage + 1} מתוך ${posts.length}.`);
-      audioParts.push(`נכתבה על ידי ${authorName}.`);
-      audioParts.push(postBody);
-
-      // בניית נתוני מטא-דאטה מורחבים עבור מסך ה"פרטים הנוספים" (מקש 3)
-      const postDetailsArray = [
-        'פרטים מלאים על ההודעה הנוכחית.',
-        'שם המחבר הוא ' + authorName,
-        'הודעה זו פורסמה ' + timeAgo(currentPost.timestamp)
-      ];
-      
-      if (currentPost.toPid) {
-        const parentPost = posts.find(x => String(x.pid) === String(currentPost.toPid));
-        if (parentPost && parentPost.user) {
-          postDetailsArray.push('הודעה זו היא תגובה ישירה ל' + parentPost.user.username);
-        }
-      }
-      postDetailsArray.push(`סך הכל ישנם ${data.postcount || posts.length} פוסטים בדיון זה.`);
-
-      const audioOutput = idList(audioParts);
-      
-      // תפריט ניווט פנימי קולי מהיר בין פוסטים
-      const navigationPrompt = idList([
-        'להודעה הבאה הקישו 1.',
-        'להודעה הקודמת הקישו 2.',
-        'לשמיעת פרטי ההודעה המלאים הקישו 3.',
-        'לחזרה לתפריט הראשי הקישו אפס.'
-      ]);
-      
-      const readCommand = buildFastMenuRead('topicnav', 15);
-      const metadataString = encodeURIComponent(postDetailsArray.join('|'));
-      
-      return res.send(
- `${audioOutput}.${navigationPrompt}&${readCommand}` +
- `&api_add_screen=topic` +
- `&api_add_tid=${topicId}` +
- `&api_add_page=${currentPage}` +
- `&api_add_details=${metadataString}`
-);
-    }
-
-    // הגנת קצה - אם הגענו למצב לא מזוהה, נחזיר לתפריט הראשי פנימית
-    console.warn(`[Fallback] Unhandled screen state: ${currentScreen}. Redirecting to main menu.`);
+    audioParts.push('t-לחזרה לתפריט קטגוריות הקישו אפס.');
+    
+    const audioOutput = generateIdList(audioParts);
+    const readCommand = buildFastMenuRead('cattopicsel', 1, 9);
+    const tidsString = tidsArray.join('>');
+    
     return res.send(
-`read=t-טוען מערכת חוזר להתחלה=dummy,no,1,1,1,Digits,no,no&api_add_screen=main`
-);
+        `${audioOutput}&${readCommand}` +
+        `&api_add_tids=${tidsString}` +
+        `&api_add_screen=category_view` +
+        `&api_add_cid_active=${cid}` +
+        `&api_add_page_active=${page}`
+    );
+}
 
-  } catch (globalError) {
-    console.error('[Global API Exception] Critical failure in module execution:', globalError);
-    const systemErrorAudio = idList([
-      'אירעה שגיאה זמנית בתקשורת ובטעינת הנתונים משרתי פורום מתמחים טופ.',
-      'אנא נסו שוב מאוחר יותר.'
-    ]);
-    return res.send(`${systemErrorAudio}&api_add_screen=main&read=t-אנא המתינו=dummy,no,1,1,2,Digits,no,no`);
-  }
-};
+/**
+ * מנגן קורא פוסטים אינטראקטיבי עבור נושא מסוים
+ * תומך במעבר דינמי בין פוסטים ובמעבר עמודים אוטומטי במידת הצורך
+ */
+async function renderTopicReaderScreen(res, topicId, page = 1, postIndex = 0, forceDetailedView = false) {
+    const data = await fetchFromForum(`/topic/${topicId}?page=${page}`);
+    if (!data || !data.posts || data.posts.length === 0) {
+        const errAudio = generateIdList(['t-לא ניתן לקרוא את הנושא המבוקש.', 't-חוזר לתפריט.']);
+        return res.send(`${errAudio}&api_add_screen=main&mainsel=`);
+    }
+
+    const posts = data.posts;
+    let currentPostIndex = postIndex;
+    let currentPage = page;
+
+    // טיפול במצב שבו הגענו לסוף הפוסטים בעמוד הנוכחי - בדיקת מעבר עמוד הבא
+    if (currentPostIndex >= posts.length) {
+        if (currentPage < data.pageCount) {
+            currentPage += 1;
+            currentPostIndex = 0;
+            return await renderTopicReaderScreen(res, topicId, currentPage, currentPostIndex);
+        } else {
+            // הגענו לסוף הדיון לחלוטין
+            const endOfTopicAudio = generateIdList([
+                't-הגעתם לסוף ההודעות בדיון זה.',
+                't-להאזנה מחדש להודעה האחרונה הקישו 2.',
+                't-לחזרה לתפריט הראשי הקישו אפס.'
+            ]);
+            const readCommand = buildFastMenuRead('topicnav', 1, 8);
+            return res.send(
+                `${endOfTopicAudio}&${readCommand}` +
+                `&api_add_tid=${topicId}` +
+                `&api_add_page=${currentPage}` +
+                `&api_add_pindex=${posts.length - 1}` +
+                `&api_add_screen=topic`
+            );
+        }
+    }
+
+    const activePost = posts[currentPostIndex];
+    const authorName = cleanTextForTTS(activePost.user ? activePost.user.username : 'משתמש פורום');
+    const rawContent = activePost.content || '';
+    const cleanContent = cleanTextForTTS(rawContent).substring(0, MAX_BODY_CHARS);
+    const topicTitle = cleanTextForTTS(data.title || '');
+
+    const audioParts = [];
+    
+    // רק בפוסט הראשון בהאזנה או בלחיצה על מידע מלא נשמיע את כותרת הנושא המלאה
+    if (currentPostIndex === 0 && currentPage === 1 && !forceDetailedView) {
+        audioParts.push(`t-אתם מאזינים לנושא: ${topicTitle}.`);
+    }
+
+    // קריינות פרטי הפוסט
+    audioParts.push(`t-הודעה מספר ${activePost.index + 1}. מאת ${authorName}.`);
+    audioParts.push(`t-${cleanContent}`);
+
+    // יצירת מטא-דאטה קצר עבור תצוגה בלוגים של המערכת במידת הצורך
+    const postDetailsArray = [];
+    postDetailsArray.push(`סך הכל ישנם ${data.postcount || posts.length} פוסטים בדיון זה.`);
+
+    const audioOutput = generateIdList(audioParts);
+    
+    // תפריט ניווט פנימי קולי מהיר בין פוסטים (Barge-in מופעל)
+    const navigationPrompt = generateIdList([
+        't-להודעה הבאה הקישו 1.',
+        't-להודעה הקודמת הקישו 2.',
+        't-לשמיעת פרטי ההודעה המלאים הקישו 3.',
+        't-לחזרה לתפריט הראשי הקישו אפס.'
+    ]).replace('id_list_message=', ''); // נשרשר אותו ל-id_list הקיים
+
+    const readCommand = buildFastMenuRead('topicnav', 1, 15);
+    const metadataString = encodeURIComponent(postDetailsArray.join('|'));
+    
+    return res.send(
+        `${audioOutput}.${navigationPrompt}&${readCommand}` +
+        `&api_add_tid=${topicId}` +
+        `&api_add_page=${currentPage}` +
+        `&api_add_pindex=${currentPostIndex}` +
+        `&api_add_screen=topic` +
+        `&api_add_details=${metadataString}`
+    );
+}
+
+// ============================================================================
+// האזנה של השרת בפורט המוגדר (עבור סביבות הרצה מקומיות או ענן חיצוני)
+// ============================================================================
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`[IVR Server Ready] Application running smoothly on port ${PORT}`);
+});
+
+export default app;

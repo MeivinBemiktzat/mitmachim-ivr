@@ -232,13 +232,16 @@ function buildReadMenu(parts, paramName, opts = {}) {
   const blockStar = opts.blockStar || 'no';
   const blockZero = opts.blockZero || 'no';
 
-  const promptStr = parts
+  // --- התיקון הקריטי כאן ---
+  // מחברים את כל חלקי הטקסט הנקיים עם נקודה ורווח, ומצמידים t- אחד בלבד בהתחלה
+  const cleanParts = parts
     .filter(p => p && String(p).trim())
-    .map(p => 't-' + sanitizePart(p))
-    .join('.');
+    .map(p => sanitizePart(p));
+  
+  const promptStr = 't-' + cleanParts.join('. ');
+  // -------------------------
 
-  // מבנה 15 הפרמטרים — הפרמטר האחרון "no" מבטל את בקשת האישור.
-  // VARNAME,reuse,max,min,timeout,type,blockStar,blockZero,,,,,,,no
+  // מבנה 15 הפרמטרים
   const readParams = [
     paramName,   // 1 שם משתנה
     'no',        // 2 שימוש חוזר בערך קיים
@@ -254,7 +257,7 @@ function buildReadMenu(parts, paramName, opts = {}) {
     '',          // 12 ריק מותר
     '',          // 13 טקסט ריק
     '',          // 14 שינוי מקלדת
-    'no'         // 15 *** ביטול בקשת אישור ***
+    'no'         // 15 ביטול בקשת אישור
   ];
 
   return `read=${promptStr}=${readParams.join(',')}`;

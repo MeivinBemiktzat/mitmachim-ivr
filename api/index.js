@@ -247,7 +247,7 @@ function buildReadMenu(parts, paramName, opts = {}) {
     '',          // 12 ריק מותר
     '',          // 13 טקסט ריק
     '',          // 14 שינוי מקלדת
-    'no'         // 15 ביטול בקשת אישור
+    ''         // 15 ביטול בקשת אישור
   ];
 
   return `read=${promptStr}=${readParams.join(',')}`;
@@ -326,13 +326,15 @@ function sanitizeStateValue(val) {
  * api_add_<INDEX>=<KEY>=<VALUE> ברצף החל מ-0.
  */
 function buildResponse(readCmd, stateParams = {}) {
-  let out = readCmd;
+  // הסרת רווחים או תווים נסתרים שאולי נגררו בסוף פקודת ה-read
+  let out = readCmd.trim(); 
   let index = 0;
   for (const key in stateParams) {
     let val = stateParams[key];
     if (val === undefined || val === null) continue;
     val = sanitizeStateValue(val);
-    out += `\napi_add_${index}=${key}=${val}`; // <--- תיקון: ירידת שורה ללא &
+    // שימוש ב- \n נקי בלבד וללא רווחים לפני או אחרי ה- api_add
+    out += `\napi_add_${index}=${key}=${val}`; 
     index++;
   }
   console.log(`[v0] buildResponse: ${out.replace(/\n/g, ' [NL] ').substring(0, 260)}`);

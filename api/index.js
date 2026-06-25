@@ -417,6 +417,8 @@ function renderMenu(lines, screenName, options = {}, extraState = {}) {
     finalResponse += `\napi_add_${index}=${key}=${sanitizeStateValue(val)}`;
     index++;
   }
+
+  console.log('[RESPONSE]', finalResponse);
   
   return res.send(finalResponse);
 }

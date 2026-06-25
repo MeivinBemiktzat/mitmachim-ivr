@@ -4,8 +4,24 @@
 // ============================================================================
 // ארכיטקטורה v7.0 — תיקון יסודי + שכלולים
 // ----------------------------------------------------------------------------
+//
+//  *** הבאג האמיתי שתוקן (מה שכל הכלים פספסו) ***
+//  ימות צוברת בכל בקשה את כל ההקשות מתחילת השיחה:
+//      screen=main&mainsel=1&recentsel=1&recentsel=2&mainsel=2&mainsel=3 ...
+//  כך, גם כשהמשתמש כבר במסך אחר, ההקשות הישנות (recentsel/mainsel)
+//  נשארות "תקועות" בבקשה. הקוד הישן נכנס לכמה בלוקים בו-זמנית
+//  והדריס את ה-state -> "הבחירה שגויה" / לא נכנס לפוסט.
+//
+//  הפתרון:
+//  1. כל בקשה כוללת מונה צעדים ייחודי (step). אנחנו מייצרים שם פרמטר
+//     קלט ייחודי לכל מסך+צעד, כך שהקשה ישנה לעולם לא תזוהה כחדשה.
+//  2. הראוטר מסתמך אך ורק על 'screen' כמקור אמת, ומעבד אך ורק את
+//     פרמטר הקלט של אותו מסך לאותו צעד. כל השאר — מתעלמים.
+//  3. ביטול מוחלט של "לאישור הקישו 1" (פרמטר 15 = no).
+//  4. מבנה api_add_<INDEX>=<KEY>=<VALUE> נכון.
+//
 //  *** שכלולים ***
-//  - הסרה מלאה של פיצ'ר החיפוש.
+//  - הסרה מלאה של פיצ'ר החיפוש (לא היה, ומוודאים שאין).
 //  - מסך "מועדפים זמניים" לשיחה (סימון נושאים).
 //  - ניווט משופר בתוך נושא: הבא/קודם/חזרה/דילוג/קפיצה/פרטים.
 //  - דפדוף עמודים בקטגוריות וברשימות.
@@ -218,7 +234,7 @@ function buildReadMenu(parts, paramName, opts = {}) {
 
   const readParams = [
     paramName,   // 1 שם משתנה (ייחודי לצעד!)
-    'yes',        // 2 שימוש חוזר
+    'no',        // 2 שימוש חוזר
     max,         // 3 מקסימום ספרות
     min,         // 4 מינימום ספרות
     waitSec,     // 5 timeout
@@ -310,9 +326,17 @@ function sanitizeStateValue(val) {
  * api_add_<INDEX>=<KEY>=<VALUE> ברצף החל מ-0.
  */
 function buildResponse(readCmd, stateParams = {}) {
-    // את ניהול המצב (State) עליך לעשות דרך שמות המשתנים ב-read 
-    // או במסד נתונים אצלך, ולא דרך שרשור api_add בתגובה.
-    return readCmd;
+  let out = readCmd;
+  let index = 0;
+  for (const key in stateParams) {
+    let val = stateParams[key];
+    if (val === undefined || val === null) continue;
+    val = sanitizeStateValue(val);
+    out += `&api_add_${index}=${key}=${val}`;
+    index++;
+  }
+  console.log(`[v0] buildResponse: ${out.substring(0, 260)}`);
+  return out;
 }
 
 /**
@@ -335,43 +359,20 @@ module.exports = async (req, res) => {
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
-  // אם ה-body מגיע כמחרוזת גולמית (בפורמט urlencoded), נפרסם אותו ידנית
-if (typeof req.body === 'string') {
-    const params = new URLSearchParams(req.body);
-    for (const [key, value] of params) {
-        q[key] = value;
-    }
-}
-  
   // איחוד פרמטרים (GET + POST)
   const q = Object.assign({}, req.query || {});
   if (req.body && typeof req.body === 'object') {
     Object.assign(q, req.body);
   }
 
-  if (q.hangup === 'yes') {
-    return res.status(200).send('OK');
-}
-
   // נירמול מערכים -> ערך אחרון
   for (const k in q) {
     if (Array.isArray(q[k])) q[k] = q[k][q[k].length - 1];
   }
 
-// זיהוי מסך וצעד מתוך ההקשה האחרונה
-let currentScreenIn = getState(q, 'screen') || 'main';
-let stepIn = parseInt(getState(q, 'step') || '0', 10) || 0;
-
-const inputKeyMatch = Object.keys(q).find(key => key.startsWith('k_'));
-
-if (inputKeyMatch) {
-  const parts = inputKeyMatch.split('_');
-
-  if (parts.length >= 3) {
-    currentScreenIn = parts[1];
-    stepIn = parseInt(parts[2], 10) || 0;
-  }
-}
+  // מקור האמת: screen + step. step מונע צבירת הקשות ישנות.
+  const currentScreenIn = getState(q, 'screen') || 'main';
+  const stepIn = parseInt(getState(q, 'step') || '0', 10) || 0;
 
   // ההקשה הרלוונטית למסך הנוכחי בלבד (מתעלמת מכל הישנות)
   const input = readInput(q, currentScreenIn, stepIn);
@@ -379,17 +380,17 @@ if (inputKeyMatch) {
   // הצעד הבא — לכל מסך חדש נגדיל אותו, כדי לקבל שם פרמטר טרי
   const nextStep = stepIn + 1;
 
-console.log(`[IVR] screen=${currentScreenIn} step=${stepIn} input="${input}" q=${JSON.stringify(q).substring(0, 260)}`);
+  console.log(`[IVR] screen=${currentScreenIn} step=${stepIn} input="${input}" q=${JSON.stringify(q).substring(0, 260)}`);
 
   // ----- עזרי בנייה לכל מסך, עם step נכון -----
 
-// הפונקציה צריכה להיראות כך:
-function renderMenu(parts, screen, opts, extraState) {
+  // בונה תפריט עם פרמטר ייחודי לצעד, ומחזיר תגובה כולל state
+  function renderMenu(parts, screen, opts, extraState) {
     const param = inputKey(screen, nextStep);
     const readCmd = buildReadMenu(parts, param, opts || {});
-    // שים לב לשורה הבאה שהייתה חסרה:
-    return res.status(200).send(readCmd);
-}
+    const state = Object.assign({ screen, step: String(nextStep) }, extraState || {});
+    return res.send(buildResponse(readCmd, state));
+  }
 
   // מעבר שקט למסך חדש
   function go(text, screen, extraState) {

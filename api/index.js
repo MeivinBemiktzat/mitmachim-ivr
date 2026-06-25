@@ -326,17 +326,10 @@ function sanitizeStateValue(val) {
  * api_add_<INDEX>=<KEY>=<VALUE> ברצף החל מ-0.
  */
 function buildResponse(readCmd, stateParams = {}) {
-  let out = readCmd;
-  let index = 0;
-  for (const key in stateParams) {
-    let val = stateParams[key];
-    if (val === undefined || val === null) continue;
-    val = sanitizeStateValue(val);
-    out += `&api_add_${index}=${key}=${val}`;
-    index++;
-  }
-  console.log(`[FULL RESPONSE]\n${out}\n[/FULL RESPONSE]`);
-  return out;
+    // את ניהול המצב (State) עליך לעשות דרך שמות המשתנים ב-read 
+    // או במסד נתונים אצלך, ולא דרך שרשור api_add בתגובה.
+    console.log([FULL RESPONSE], readCmd);
+    return readCmd;
 }
 
 /**
@@ -365,6 +358,10 @@ module.exports = async (req, res) => {
     Object.assign(q, req.body);
   }
 
+  if (q.hangup === 'yes') {
+    return res.status(200).send('OK');
+}
+
   // נירמול מערכים -> ערך אחרון
   for (const k in q) {
     if (Array.isArray(q[k])) q[k] = q[k][q[k].length - 1];
@@ -385,14 +382,13 @@ module.exports = async (req, res) => {
   // ----- עזרי בנייה לכל מסך, עם step נכון -----
 
   // בונה תפריט עם פרמטר ייחודי לצעד, ומחזיר תגובה כולל state
-  function renderMenu(parts, screen, opts, extraState) {
+function renderMenu(parts, screen, opts, extraState) {
     const param = inputKey(screen, nextStep);
     const readCmd = buildReadMenu(parts, param, opts || {});
     const state = Object.assign({ screen, step: String(nextStep) }, extraState || {});
-    return res.send(
-  "read=t-ברוכים הבאים לפורום מתמחים טופ. הקישו 1 לבדיקה=k_main_1,no,1,1,8,Digits,no,no,,,,,,,no"
-);
-  }
+    // השתמש ב-buildResponse המתוקן מהסעיף הקודם
+    return res.send(buildResponse(readCmd, state));
+}
 
   // מעבר שקט למסך חדש
   function go(text, screen, extraState) {

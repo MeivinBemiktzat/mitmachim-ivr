@@ -403,7 +403,7 @@ function renderMenu(lines, screenName, options = {}, extraState = {}) {
   // 3. שילוב המשתנים (ה-State של היישום)
   const stateParams = {
     screen: screenName,
-    step: String(extraState.step || 1),
+    step: String(extraState.step ?? nextStep),
     ...extraState
   };
   
@@ -413,7 +413,7 @@ function renderMenu(lines, screenName, options = {}, extraState = {}) {
   let index = 0;
   for (const key in stateParams) {
     let val = stateParams[key];
-    if (val === undefined || val === null || key === 'step') continue;
+    if (val === undefined || val === null) continue;
     finalResponse += `\napi_add_${index}=${key}=${sanitizeStateValue(val)}`;
     index++;
   }

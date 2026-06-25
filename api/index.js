@@ -335,7 +335,7 @@ function buildResponse(readCmd, stateParams = {}) {
     out += `&api_add_${index}=${key}=${val}`;
     index++;
   }
-  console.log(`[v0] buildResponse: ${out.substring(0, 260)}`);
+  console.log(`[FULL RESPONSE]\n${out}\n[/FULL RESPONSE]`);
   return out;
 }
 

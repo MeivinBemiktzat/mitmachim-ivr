@@ -852,6 +852,3 @@ function renderMenu(lines, screenName, options = {}, extraState = {}) {
     return res.send(buildResponse(readCmd, { screen: 'main', step: '1' }));
   }
 };
-
-// ייצוא האפליקציה עבור Vercel
-module.exports = app;

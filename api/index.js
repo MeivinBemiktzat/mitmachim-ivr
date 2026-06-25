@@ -851,7 +851,7 @@ function renderMenu(lines, screenName, options = {}, extraState = {}) {
     
     return res.send(buildResponse(readCmd, { screen: 'main', step: '1' }));
   }
-}); // <-- הסוגר החיוני הזה (של הראוטר) כנראה נמחק לך וגרם לכל הבלגאן!
+};
 
 // ייצוא האפליקציה עבור Vercel
 module.exports = app;

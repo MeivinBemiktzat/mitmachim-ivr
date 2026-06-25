@@ -852,18 +852,25 @@ function renderMenu(lines, screenName, options = {}, extraState = {}) {
       ], 'topicend', { waitSec: 9 }, { tid });
     }
 
-    // ===== הגנת קצה =====
+// ===== הגנת קצה =====
     console.warn(`[Fallback] Unhandled screen: ${currentScreen}`);
     return go('חוזר להתחלה', 'main');
 
   } catch (globalError) {
     console.error('[Global Exception]', globalError.message);
-    const param = inputKey('main', nextStep);
+    
+    // תיקון זמני משלים כדי שלא יקרוס במקרה והמשתנים לא הוגדרו בשגיאה הכללית
+    const fallbackParam = (typeof inputKey === 'function') ? inputKey('main', '1') : 'k_main_1';
+    
     const readCmd = buildReadMenu([
       'אירעה שגיאה בטעינת הנתונים מהפורום',
       'אנא נסו שוב מאוחר יותר',
       'לחזרה לתפריט הראשי הקישו אפס'
-    ], param, { waitSec: 6 });
-    return res.send(buildResponse(readCmd, { screen: 'main', step: String(nextStep) }));
+    ], fallbackParam, { waitSec: 6 });
+    
+    return res.send(buildResponse(readCmd, { screen: 'main', step: '1' }));
   }
-};
+}); // <-- הסוגר החיוני הזה (של הראוטר) כנראה נמחק לך וגרם לכל הבלגאן!
+
+// ייצוא האפליקציה עבור Vercel
+module.exports = app;

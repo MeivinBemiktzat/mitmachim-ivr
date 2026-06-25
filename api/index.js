@@ -5,7 +5,7 @@
 // ארכיטקטורה v7.0 — תיקון יסודי + שכלולים
 // ----------------------------------------------------------------------------
 //  *** שכלולים ***
-//  - הסרה מלאה של פיצ'ר החיפוש (לא היה, ומוודאים שאין).
+//  - הסרה מלאה של פיצ'ר החיפוש.
 //  - מסך "מועדפים זמניים" לשיחה (סימון נושאים).
 //  - ניווט משופר בתוך נושא: הבא/קודם/חזרה/דילוג/קפיצה/פרטים.
 //  - דפדוף עמודים בקטגוריות וברשימות.
@@ -335,6 +335,14 @@ module.exports = async (req, res) => {
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
+  // אם ה-body מגיע כמחרוזת גולמית (בפורמט urlencoded), נפרסם אותו ידנית
+if (typeof req.body === 'string') {
+    const params = new URLSearchParams(req.body);
+    for (const [key, value] of params) {
+        q[key] = value;
+    }
+}
+  
   // איחוד פרמטרים (GET + POST)
   const q = Object.assign({}, req.query || {});
   if (req.body && typeof req.body === 'object') {
@@ -371,18 +379,16 @@ if (inputKeyMatch) {
   // הצעד הבא — לכל מסך חדש נגדיל אותו, כדי לקבל שם פרמטר טרי
   const nextStep = stepIn + 1;
 
-  console.log(`[IVR] screen=${currentScreenIn} step=${stepIn} input="${input}" q=${JSON.stringify(q).substring(0, 260)}`);
+console.log(`[IVR] screen=${currentScreenIn} step=${stepIn} input="${input}" q=${JSON.stringify(q).substring(0, 260)}`);
 
   // ----- עזרי בנייה לכל מסך, עם step נכון -----
 
-  // בונה תפריט עם פרמטר ייחודי לצעד, ומחזיר תגובה כולל state
+// הפונקציה צריכה להיראות כך:
 function renderMenu(parts, screen, opts, extraState) {
     const param = inputKey(screen, nextStep);
     const readCmd = buildReadMenu(parts, param, opts || {});
-    const state = Object.assign({ screen, step: String(nextStep) }, extraState || {});
-    
-    // שליחת התגובה ללא שרשור api_add שגורם לניתוק
-    return res.send(readCmd);
+    // שים לב לשורה הבאה שהייתה חסרה:
+    return res.status(200).send(readCmd);
 }
 
   // מעבר שקט למסך חדש

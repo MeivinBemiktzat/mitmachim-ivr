@@ -639,26 +639,7 @@ function renderMenu(lines, screenName, options = {}, extraState = {}) {
       ], 'main', { waitSec: 8 }, { step: '0' });
     }
 
-  // רק אם יש קלט (המשתמש הקיש משהו), מעבדים אותו:
-  if (inputKey === '1') {
-    // הפניה למסך פוסטים אחרונים (כאן יתבצע ה-fetch לראשונה!)
-    return go('recent', '0'); 
-  }
-  if (inputKey === '2') {
-    return go('topics', '0');
-  }
-  if (inputKey === '3') {
-    return go('categories', '0');
-  }
 
-  // אם הוקש מקש לא חוקי בתפריט הראשי
-  return renderMenu([
-    'מקש שגוי',
-    'לכניסה לפוסטים האחרונים הקישו 1',
-    'לשמיעת הנושאים האחרונים שנפתחו הקישו 2',
-    'לכניסה לפי קטגוריות הקישו 3'
-  ], 'main', { waitSec: 8 }, { step: '0' });
-}
 
     // ===== פוסטים אחרונים =====
     if (currentScreen === 'recent') {

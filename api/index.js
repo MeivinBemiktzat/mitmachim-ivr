@@ -247,7 +247,7 @@ function buildReadMenu(parts, paramName, opts = {}) {
     '',          // 12 ריק מותר
     '',          // 13 טקסט ריק
     '',          // 14 שינוי מקלדת
-    ''         // 15 ביטול בקשת אישור
+    'no'         // 15 ביטול בקשת אישור
   ];
 
   return `read=${promptStr}=${readParams.join(',')}`;
@@ -387,12 +387,39 @@ module.exports = async (req, res) => {
   // ----- עזרי בנייה לכל מסך, עם step נכון -----
 
   // בונה תפריט עם פרמטר ייחודי לצעד, ומחזיר תגובה כולל state
-  function renderMenu(parts, screen, opts, extraState) {
-    const param = inputKey(screen, nextStep);
-    const readCmd = buildReadMenu(parts, param, opts || {});
-    const state = Object.assign({ screen, step: String(nextStep) }, extraState || {});
-    return res.send(buildResponse(readCmd, state));
+// חפש את המקום שבו מורכבת פקודת ה-read עבור תפריטים (למשל בתוך renderMenu)
+// ושנה את הלוגיקה כך שהפלט יחזיר שני חלקים מופרדים ב-\n :
+
+function renderMenu(lines, screenName, options = {}, extraState = {}) {
+  const fullText = lines.join('. '); // מחבר את כל השורות לטקסט אחד ארוך
+  const paramName = `k_${screenName}_${extraState.step || 1}`;
+  
+  // 1. הגדרת פקודת ההשמעה של הטקסט הארוך
+  const messageCmd = `id_list_message=t-${sanitizePart(fullText)}`;
+  
+  // 2. הגדרת פקודת ה-read שתהיה שקטה ותמתין רק להקשה (משתמשים בקובץ שקט או בטקסט ריק)
+  const readCmd = `read=f-empty=${paramName},no,1,1,${options.waitSec || 8},Digits,no,no,,,,,,,`;
+  
+  // 3. שילוב המשתנים (ה-State של היישום)
+  const stateParams = {
+    screen: screenName,
+    step: String(extraState.step || 1),
+    ...extraState
+  };
+  
+  // בניית התשובה הסופית עם ירידות שורה נקיות
+  let finalResponse = `${messageCmd}\n${readCmd}`;
+  
+  let index = 0;
+  for (const key in stateParams) {
+    let val = stateParams[key];
+    if (val === undefined || val === null || key === 'step') continue;
+    finalResponse += `\napi_add_${index}=${key}=${sanitizeStateValue(val)}`;
+    index++;
   }
+  
+  return finalResponse;
+}
 
   // מעבר שקט למסך חדש
   function go(text, screen, extraState) {

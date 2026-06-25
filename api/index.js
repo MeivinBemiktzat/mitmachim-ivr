@@ -418,7 +418,7 @@ function renderMenu(lines, screenName, options = {}, extraState = {}) {
     index++;
   }
   
-  return finalResponse;
+  return res.send(finalResponse);
 }
 
   // מעבר שקט למסך חדש

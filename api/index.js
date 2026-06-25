@@ -332,10 +332,10 @@ function buildResponse(readCmd, stateParams = {}) {
     let val = stateParams[key];
     if (val === undefined || val === null) continue;
     val = sanitizeStateValue(val);
-    out += `&api_add_${index}=${key}=${val}`;
+    out += `\napi_add_${index}=${key}=${val}`; // <--- תיקון: ירידת שורה ללא &
     index++;
   }
-  console.log(`[v0] buildResponse: ${out.substring(0, 260)}`);
+  console.log(`[v0] buildResponse: ${out.replace(/\n/g, ' [NL] ').substring(0, 260)}`);
   return out;
 }
 

@@ -4,22 +4,6 @@
 // ============================================================================
 // ארכיטקטורה v7.0 — תיקון יסודי + שכלולים
 // ----------------------------------------------------------------------------
-//
-//  *** הבאג האמיתי שתוקן (מה שכל הכלים פספסו) ***
-//  ימות צוברת בכל בקשה את כל ההקשות מתחילת השיחה:
-//      screen=main&mainsel=1&recentsel=1&recentsel=2&mainsel=2&mainsel=3 ...
-//  כך, גם כשהמשתמש כבר במסך אחר, ההקשות הישנות (recentsel/mainsel)
-//  נשארות "תקועות" בבקשה. הקוד הישן נכנס לכמה בלוקים בו-זמנית
-//  והדריס את ה-state -> "הבחירה שגויה" / לא נכנס לפוסט.
-//
-//  הפתרון:
-//  1. כל בקשה כוללת מונה צעדים ייחודי (step). אנחנו מייצרים שם פרמטר
-//     קלט ייחודי לכל מסך+צעד, כך שהקשה ישנה לעולם לא תזוהה כחדשה.
-//  2. הראוטר מסתמך אך ורק על 'screen' כמקור אמת, ומעבד אך ורק את
-//     פרמטר הקלט של אותו מסך לאותו צעד. כל השאר — מתעלמים.
-//  3. ביטול מוחלט של "לאישור הקישו 1" (פרמטר 15 = no).
-//  4. מבנה api_add_<INDEX>=<KEY>=<VALUE> נכון.
-//
 //  *** שכלולים ***
 //  - הסרה מלאה של פיצ'ר החיפוש (לא היה, ומוודאים שאין).
 //  - מסך "מועדפים זמניים" לשיחה (סימון נושאים).
@@ -328,7 +312,6 @@ function sanitizeStateValue(val) {
 function buildResponse(readCmd, stateParams = {}) {
     // את ניהול המצב (State) עליך לעשות דרך שמות המשתנים ב-read 
     // או במסד נתונים אצלך, ולא דרך שרשור api_add בתגובה.
-    console.log([FULL RESPONSE], readCmd);
     return readCmd;
 }
 
@@ -367,9 +350,20 @@ module.exports = async (req, res) => {
     if (Array.isArray(q[k])) q[k] = q[k][q[k].length - 1];
   }
 
-  // מקור האמת: screen + step. step מונע צבירת הקשות ישנות.
-  const currentScreenIn = getState(q, 'screen') || 'main';
-  const stepIn = parseInt(getState(q, 'step') || '0', 10) || 0;
+// זיהוי מסך וצעד מתוך ההקשה האחרונה
+let currentScreenIn = getState(q, 'screen') || 'main';
+let stepIn = parseInt(getState(q, 'step') || '0', 10) || 0;
+
+const inputKeyMatch = Object.keys(q).find(key => key.startsWith('k_'));
+
+if (inputKeyMatch) {
+  const parts = inputKeyMatch.split('_');
+
+  if (parts.length >= 3) {
+    currentScreenIn = parts[1];
+    stepIn = parseInt(parts[2], 10) || 0;
+  }
+}
 
   // ההקשה הרלוונטית למסך הנוכחי בלבד (מתעלמת מכל הישנות)
   const input = readInput(q, currentScreenIn, stepIn);
@@ -386,8 +380,9 @@ function renderMenu(parts, screen, opts, extraState) {
     const param = inputKey(screen, nextStep);
     const readCmd = buildReadMenu(parts, param, opts || {});
     const state = Object.assign({ screen, step: String(nextStep) }, extraState || {});
-    // השתמש ב-buildResponse המתוקן מהסעיף הקודם
-    return res.send(buildResponse(readCmd, state));
+    
+    // שליחת התגובה ללא שרשור api_add שגורם לניתוק
+    return res.send(readCmd);
 }
 
   // מעבר שקט למסך חדש

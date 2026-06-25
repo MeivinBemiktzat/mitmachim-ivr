@@ -389,7 +389,9 @@ module.exports = async (req, res) => {
     const param = inputKey(screen, nextStep);
     const readCmd = buildReadMenu(parts, param, opts || {});
     const state = Object.assign({ screen, step: String(nextStep) }, extraState || {});
-    return res.send(buildResponse(readCmd, state));
+    return res.send(
+  "read=t-ברוכים הבאים לפורום מתמחים טופ. הקישו 1 לבדיקה=k_main_1,no,1,1,8,Digits,no,no,,,,,,,no"
+);
   }
 
   // מעבר שקט למסך חדש

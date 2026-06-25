@@ -234,7 +234,7 @@ function buildReadMenu(parts, paramName, opts = {}) {
 
   const readParams = [
     paramName,   // 1 שם משתנה (ייחודי לצעד!)
-    'no',        // 2 שימוש חוזר
+    'yes',        // 2 שימוש חוזר
     max,         // 3 מקסימום ספרות
     min,         // 4 מינימום ספרות
     waitSec,     // 5 timeout

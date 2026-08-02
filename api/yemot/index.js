@@ -17,9 +17,10 @@
  *      ותתי-קטגוריות רקורסיבית, אשכול/הודעות, עזרה)
  *   6. הרכבת הראוטר וייצוא ל-Vercel
  *
- * תפריט ראשי נוכחי: 1=פוסטים אחרונים, 2=נושאים אחרונים, 3=קטגוריות, 6=עזרה.
- * שלוחות 0/4/5/8/9 (חזרה למיקום אחרון, חיפוש, תפריט אישי, הגדרות, מנהל) הוסרו
- * במלואן מהקוד, כולל שמירת מיקום ב-Vercel Blob וה-cache בזיכרון.
+ * תפריט ראשי נוכחי: 1=פוסטים אחרונים, 2=נושאים אחרונים, 3=קטגוריות,
+ * 4=חיפוש קולי (הקלטה -> תמלול -> חיפוש בפורום, ר' voiceSearchFlow), 6=עזרה.
+ * שלוחות 0/5/8/9 (חזרה למיקום אחרון, תפריט אישי, הגדרות, מנהל) הוסרו במלואן
+ * מהקוד, כולל שמירת מיקום ב-Vercel Blob וה-cache בזיכרון.
  *
  * הערה: מוזיקת רקע (music_on_hold) אינה מנוהלת בקוד זה בכלל -
  * היא מוגדרת ומופעלת ברמת השלוחה בממשק ניהול ימות המשיח בלבד.
@@ -37,6 +38,9 @@ const axios = require('axios');
 
 const FORUM_BASE = 'https://mitmachim.top';
 const SERVER_BASE = 'https://mitmachim-ivr.vercel.app';
+// שרת הניהול של ימות המשיח - דרכו מורידים קבצי הקלטה שנשמרו ע"י type='record'
+// (ר' תיעוד ליד downloadRecording/voiceSearchFlow). לא קשור לפורום mitmachim.top.
+const YEMOT_MANAGEMENT_BASE = 'https://www.call2all.co.il/ym/api';
 
 // הגדרות HTTP client לפורום - keep-alive + timeout סביר + compression
 const http = axios.create({
@@ -214,11 +218,40 @@ function parseNewestTopicsResponse(data) {
   const posts = data.posts || data.topics || [];
   return posts
     .map((p) => {
-      if (p.tid) return p; // כבר במבנה topic שטוח
+      // הערה קריטית: גם post וגם topic נושאים שדה tid - אי אפשר להבדיל ביניהם
+      // לפי tid בלבד! ההבדל האמיתי: ל-topic שטוח יש title (או titleRaw), בעוד
+      // של-post יש content. זה מה שגרם לבאג "ללא כותרת" - post גולמי (בלי title)
+      // עבר כאילו הוא כבר topic שטוח, ואז buildTopicHeaderMessages לא מצא title.
+      if (p.title || p.titleRaw) return p; // כבר במבנה topic שטוח
       if (!p.topic) return null;
       return { ...p.topic, user: p.topic.user || p.user };
     })
     .filter(Boolean);
+}
+
+/** חיפוש חופשי בפורום לפי טקסט (term) - משמש בשלוחה 4 (חיפוש קולי) עם הטקסט
+ *  שתומלל מההקלטה. משתמש באותו נתיב /api/search כמו fetchNewestTopics, אך עם
+ *  term אמיתי במקום ריק, וממוין לפי רלוונטיות (ברירת מחדל של NodeBB) ולא לפי
+ *  timestamp. אותה הערה קריטית לגבי session חלה גם כאן - ר' fetchNewestTopics.
+ *  נשלף מחדש בכל קריאה, ללא cache. */
+async function fetchSearchResults(term, page = 1) {
+  return withRetry(() => authenticatedGet('/api/search', {
+    in: 'titlesposts',
+    term,
+    matchWords: 'all',
+    by: '',
+    categories: '',
+    searchChildren: 'false',
+    hasTags: '',
+    replies: '',
+    repliesFilter: 'atleast',
+    timeFilter: '',
+    timeRange: '',
+    sortBy: '',
+    sortDirection: 'desc',
+    showAs: 'topics',
+    page
+  }), 1);
 }
 
 /** רשימת כל הקטגוריות בפורום, כולל תתי-קטגוריות (NodeBB מחזיר עץ עם children) -
@@ -265,6 +298,47 @@ async function fetchTopic(tid, slug, page = 1) {
     const { data } = await http.get(path, { params: { page } });
     return data;
   }, 1);
+}
+
+/* ============================================================
+ * 2ב. תמלול קול - הורדת הקלטה ממערכת ימות ושליחתה לתמלול (Python)
+ * ============================================================
+ * נקודת אמת חשובה (מתועדת בקוד yemot-router2 עצמו): קריאה עם mode='record'
+ * *לא* מחזירה את בייטי האודיו ל-webhook שלנו - value שמוחזר הוא רק מספר/
+ * מזהה קובץ. קובץ ה-wav עצמו נשמר בשרתי ימות בנתיב שהוגדר (path/file_name),
+ * ויש להוריד אותו בנפרד דרך Management API של ימות (טוקן נפרד, לא קשור
+ * לפרטי ההתחברות של הפורום). ר' גם .env.example (YEMOT_MANAGEMENT_TOKEN).
+ */
+
+/** מוריד את קובץ ה-wav שנשמר בשלוחת ההקלטה (path קבוע, ר' voiceSearchFlow),
+ *  דרך Management API של ימות. מחזיר Buffer של בייטי ה-wav הגולמיים. */
+async function downloadRecording(recordingPath) {
+  const token = process.env.YEMOT_MANAGEMENT_TOKEN;
+  if (!token) {
+    throw new Error('YEMOT_MANAGEMENT_TOKEN לא מוגדר בסביבה - לא ניתן להוריד הקלטות');
+  }
+  const { data } = await axios.get(`${YEMOT_MANAGEMENT_BASE}/DownloadFile`, {
+    params: { token, path: recordingPath },
+    responseType: 'arraybuffer',
+    timeout: 15000
+  });
+  return Buffer.from(data);
+}
+
+/** שולח את בייטי ה-wav לפונקציית התמלול (Python, api/transcribe.py) ומחזיר
+ *  את הטקסט המתומלל. ריפוד השקט לפני/אחרי (כדי שהתמלול לא "יבלע" חצאי מילים
+ *  בתחילת/סוף ההקלטה) מתבצע בצד הפייתון על קובץ ה-wav שהתקבל, לא בצד ימות -
+ *  אין אפשרות ב-type='record' של ימות להוסיף שקט לתוך ההקלטה עצמה. */
+async function transcribeRecording(wavBuffer) {
+  const { data } = await axios.post(`${SERVER_BASE}/api/transcribe`, wavBuffer, {
+    headers: { 'Content-Type': 'audio/wav' },
+    timeout: 20000,
+    maxBodyLength: 20 * 1024 * 1024
+  });
+  if (!data || typeof data.text !== 'string') {
+    throw new Error('תגובת שירות התמלול לא תקינה');
+  }
+  return data.text.trim();
 }
 
 /* ============================================================
@@ -445,6 +519,107 @@ async function recentTopicsFlow(call, page) {
     onNextPage: () => recentTopicsFlow(call, page + 1),
     onPrevPage: page > 1 ? () => recentTopicsFlow(call, page - 1) : null,
     context: `recenttopics:${page}`
+  });
+}
+
+/* ---------- שלוחה 4: חיפוש קולי - הקלטה -> תמלול -> חיפוש בפורום ---------- */
+
+// נתיב קבוע לשמירת הקלטות החיפוש בשרתי ימות (תיקייה זמנית ייעודית, לא תיקיית
+// שלוחה קיימת). קובץ נדרס בכל שיחה - אין צורך לשמור היסטוריית הקלטות חיפוש.
+const VOICE_SEARCH_RECORD_PATH = 'ivr2:/1/search-temp';
+const VOICE_SEARCH_RECORD_FILENAME = 'query';
+
+async function voiceSearchFlow(call) {
+  // שלב 1: הקלטת השאילתה. no_confirm_menu=true מדלג על "לאישור הקישו 2" -
+  // המאזין פשוט מקליט ומקיש # ועוברים ישר לתמלול, לחוויה זורמת יותר בחיפוש.
+  await call.read([
+    { type: 'text', data: 'חיפוש קולי בפורום', removeInvalidChars: true },
+    { type: 'text', data: 'אנא אמרו את מה שתרצו לחפש לאחר הצליל, ובסיום הקישו סולמית', removeInvalidChars: true }
+  ], 'record', {
+    path: VOICE_SEARCH_RECORD_PATH,
+    file_name: VOICE_SEARCH_RECORD_FILENAME,
+    no_confirm_menu: true,
+    min_length: 1,
+    max_length: 20
+  });
+
+  // שלב 2: הורדת ההקלטה מימות ושליחתה לתמלול. הריפוד בשקט לפני/אחרי ההקלטה
+  // (כדי שהתמלול לא יחתוך חצאי מילים בתחילת/סוף) מתבצע בצד הפייתון, ר' תיעוד
+  // downloadRecording/transcribeRecording למעלה.
+  let queryText;
+  try {
+    const recordingPath = `${VOICE_SEARCH_RECORD_PATH}/${VOICE_SEARCH_RECORD_FILENAME}`;
+    const wavBuffer = await downloadRecording(recordingPath);
+    queryText = await transcribeRecording(wavBuffer);
+  } catch (err) {
+    console.error('[voiceSearchFlow] שגיאת תמלול', err.message);
+    return call.id_list_message([
+      { type: 'text', data: 'לא ניתן היה לתמלל את ההקלטה כרגע, אנא נסו שוב', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  if (!queryText) {
+    return call.id_list_message([
+      { type: 'text', data: 'לא זוהה דיבור בהקלטה, אנא נסו שוב', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  // שלב 3: חיפוש בפורום עם הטקסט שתומלל, והצגת התוצאות כמו בשאר השלוחות.
+  let data;
+  try {
+    data = await fetchSearchResults(queryText, 1);
+  } catch (err) {
+    console.error('[voiceSearchFlow] שגיאת חיפוש', err.message);
+    return call.id_list_message([
+      { type: 'text', data: 'החיפוש נכשל כרגע, אנא נסו שוב', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  const topics = parseNewestTopicsResponse(data);
+
+  if (topics.length === 0) {
+    return call.id_list_message([
+      { type: 'text', data: `לא נמצאו תוצאות עבור: ${sanitizeForSpeech(queryText)}`, removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  await call.id_list_message([
+    { type: 'text', data: `נמצאו ${topics.length} תוצאות עבור: ${sanitizeForSpeech(queryText)}`, removeInvalidChars: true }
+  ], { prependToNextAction: true });
+
+  await browseTopicList(call, topics, {
+    onOpen: (t) => topicFlow(call, t.tid, t.slug || '', 1, 0),
+    onNextPage: () => voiceSearchResultsPage(call, queryText, 2),
+    onPrevPage: null,
+    context: `voicesearch:${queryText}:1`
+  });
+}
+
+/** עמוד תוצאות נוסף לחיפוש קולי (עמוד 1 מטופל בתוך voiceSearchFlow עצמה,
+ *  יחד עם ההקלטה/תמלול - אין טעם להקליט מחדש כדי לדפדף בין עמודי אותה שאילתה). */
+async function voiceSearchResultsPage(call, queryText, page) {
+  let data;
+  try {
+    data = await fetchSearchResults(queryText, page);
+  } catch (err) {
+    console.error('[voiceSearchResultsPage] שגיאת חיפוש', err.message);
+    return call.id_list_message([
+      { type: 'text', data: 'לא ניתן לטעון את העמוד הבא כרגע, אנא נסו שוב', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  const topics = parseNewestTopicsResponse(data);
+  if (topics.length === 0) {
+    return call.id_list_message([
+      { type: 'text', data: 'אין תוצאות נוספות', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  await browseTopicList(call, topics, {
+    onOpen: (t) => topicFlow(call, t.tid, t.slug || '', 1, 0),
+    onNextPage: () => voiceSearchResultsPage(call, queryText, page + 1),
+    onPrevPage: page > 1 ? () => voiceSearchResultsPage(call, queryText, page - 1) : null,
+    context: `voicesearch:${queryText}:${page}`
   });
 }
 
@@ -710,6 +885,7 @@ router.get('/', async (call) => {
         { type: 'text', data: 'להאזנה לפוסטים אחרונים הקישו 1', removeInvalidChars: true },
         { type: 'text', data: 'לנושאים אחרונים הקישו 2', removeInvalidChars: true },
         { type: 'text', data: 'לקטגוריות הקישו 3', removeInvalidChars: true },
+        { type: 'text', data: 'לחיפוש קולי בפורום הקישו 4', removeInvalidChars: true },
         { type: 'text', data: 'לעזרה הקישו 6', removeInvalidChars: true }
       ], 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
 
@@ -719,6 +895,7 @@ router.get('/', async (call) => {
         case '1': await recentPostsFlow(call, 1); break;
         case '2': await recentTopicsFlow(call, 1); break;
         case '3': await categoriesFlow(call); break;
+        case '4': await voiceSearchFlow(call); break;
         case '6': await helpFlow(call); break;
         default: break; // הקשה לא מוכרת - חוזר לתפריט הראשי
       }

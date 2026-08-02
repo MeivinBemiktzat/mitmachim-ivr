@@ -71,6 +71,94 @@ async function withRetry(fn, retries = 1) {
   throw lastErr;
 }
 
+/**
+ * ניהול session של "משתמש שירות" קבוע בפורום, לצורך קריאה ל-API-ים שדורשים
+ * חיבור (כגון /api/search - חיפוש חסום לאורחים ב-NodeBB כברירת מחדל, ראו הערה
+ * ליד fetchNewestTopics). ה-session מוחזק בזיכרון התהליך (module-level state):
+ *   1. GET /api/config -> csrf_token + עוגיית express.sid ראשונית.
+ *   2. POST /login עם username/password/_csrf -> עוגיית session מחוברת.
+ * העוגייה נשמרת ומצורפת ידנית לכל בקשה מוגנת (Cookie header), ומתבצע login
+ * מחדש אוטומטי אם מתקבל 401 (session פג/לא תקין) - כדי שלא יידרש רענון ידני.
+ * הרשאות: SERVICE_USERNAME + SERVICE_PASSWORD במשתני הסביבה (ראו .env.example).
+ * אם לא הוגדרו, שלוחות שדורשות session (שלוחה 2) יחזירו הודעת שגיאה ברורה.
+ */
+let sessionCookie = null;
+let sessionLoginPromise = null;
+
+async function loginServiceAccount() {
+  const username = process.env.SERVICE_USERNAME;
+  const password = process.env.SERVICE_PASSWORD;
+  if (!username || !password) {
+    throw new Error('SERVICE_USERNAME/SERVICE_PASSWORD לא מוגדרים בסביבה - לא ניתן להתחבר לפורום');
+  }
+
+  const configRes = await http.get('/api/config', {
+    headers: sessionCookie ? { Cookie: sessionCookie } : {}
+  });
+  const csrfToken = configRes.data?.csrf_token;
+  const initialCookie = extractCookie(configRes.headers['set-cookie']);
+  if (!csrfToken) throw new Error('לא התקבל csrf_token מ-/api/config');
+
+  const loginRes = await http.post('/login', { username, password }, {
+    headers: {
+      'x-csrf-token': csrfToken,
+      Cookie: initialCookie || (sessionCookie || ''),
+      'Content-Type': 'application/json'
+    },
+    validateStatus: (s) => s < 500
+  });
+
+  if (loginRes.status >= 400) {
+    throw new Error(`התחברות משתמש שירות נכשלה (סטטוס ${loginRes.status})`);
+  }
+
+  const loginCookie = extractCookie(loginRes.headers['set-cookie']);
+  sessionCookie = loginCookie || initialCookie;
+  if (!sessionCookie) throw new Error('לא התקבלה עוגיית session אחרי התחברות');
+  console.log('[AUTH] התחברות משתמש שירות הצליחה');
+  return sessionCookie;
+}
+
+/** מבטיח שיש session תקף (מתחבר אם עוד אין), תוך מניעת התחברויות מקבילות כפולות. */
+async function ensureSession() {
+  if (sessionCookie) return sessionCookie;
+  if (!sessionLoginPromise) {
+    sessionLoginPromise = loginServiceAccount().finally(() => { sessionLoginPromise = null; });
+  }
+  return sessionLoginPromise;
+}
+
+/** שולף רק את זוג ה-key=value של express.sid (מתעלם מ-Path/HttpOnly/וכו') מתוך
+ *  מערך כותרות set-cookie, כדי לשלוח Cookie header תקין בבקשות הבאות. */
+function extractCookie(setCookieHeaders) {
+  if (!setCookieHeaders) return null;
+  const arr = Array.isArray(setCookieHeaders) ? setCookieHeaders : [setCookieHeaders];
+  const parts = arr.map((c) => c.split(';')[0].trim()).filter(Boolean);
+  return parts.length ? parts.join('; ') : null;
+}
+
+/**
+ * מבצע קריאת GET מאומתת (עם session של משתמש השירות) אל נתיב מוגן בפורום.
+ * מתחבר אוטומטית אם אין session עדיין, ומתחבר מחדש פעם אחת אם מתקבל 401
+ * (למשל session שפג) - כדי שלא יידרש רענון ידני אף פעם.
+ */
+async function authenticatedGet(path, params) {
+  await ensureSession();
+  try {
+    const res = await http.get(path, { params, headers: { Cookie: sessionCookie } });
+    return res.data;
+  } catch (err) {
+    if (err.response?.status === 401) {
+      console.log('[AUTH] session פג תוקף, מתחבר מחדש');
+      sessionCookie = null;
+      await ensureSession();
+      const res = await http.get(path, { params, headers: { Cookie: sessionCookie } });
+      return res.data;
+    }
+    throw err;
+  }
+}
+
 /* ============================================================
  * 2. שכבת נתונים - NodeBB REST API (mitmachim.top)
  * NodeBB חושף כל דף כ-JSON על ידי הוספת api/ בתחילת הנתיב.
@@ -78,7 +166,7 @@ async function withRetry(fn, retries = 1) {
  * ============================================================ */
 
 /** פוסטים/נושאים אחרונים בפורום (ממוין לפי זמן פעילות אחרונה/תגובה אחרונה) -
- *  נשלף מחדש בכל קריאה, ללא cache. */
+ *  נשלף מחדש בכל קריאה, ללא cache. נתיב ציבורי - אינו דורש session. */
 async function fetchRecentTopics(page = 1) {
   return withRetry(async () => {
     const { data } = await http.get('/api/recent', { params: { page } });
@@ -88,24 +176,49 @@ async function fetchRecentTopics(page = 1) {
 
 /** נושאים (אשכולות) חדשים, ממוינים לפי זמן *יצירת האשכול* (topic.timestamp) ולא
  *  לפי זמן הפעילות/תגובה אחרונה - זהו הבדל מהותי מ-fetchRecentTopics/api/recent.
- *  מבוסס על אותו מנגנון חיפוש שמניב את הרשימה בכתובת:
- *  https://mitmachim.top/search?in=titles&sortBy=topic.timestamp&sortDirection=desc&showAs=topics
- *  נשלף מחדש בכל קריאה, ללא cache. */
+ *  משתמש באותם פרמטרים בדיוק כמו הכתובת הפעילה בדפדפן:
+ *  https://mitmachim.top/search?in=titles&term=&matchWords=all&by=&categories=&
+ *    searchChildren=false&hasTags=&replies=&repliesFilter=atleast&timeFilter=newer&
+ *    timeRange=&sortBy=topic.timestamp&sortDirection=desc&showAs=topics
+ *  התגובה מגיעה במבנה posts[] כאשר לכל פריט יש שדה topic מקונן (ולא רשימת topics
+ *  שטוחה) - ר' parseNewestTopicsResponse.
+ *  הערה קריטית: /api/search ב-NodeBB חסום לאורחים כברירת מחדל ומחזיר 401 בלי
+ *  session מחובר - לכן נעשה שימוש ב-authenticatedGet (משתמש שירות, ר' תיעוד
+ *  למעלה) ולא בקריאה ישירה. נשלף מחדש בכל קריאה, ללא cache. */
 async function fetchNewestTopics(page = 1) {
-  return withRetry(async () => {
-    const { data } = await http.get('/api/search', {
-      params: {
-        term: '',
-        in: 'titles',
-        matchWords: 'all',
-        sortBy: 'topic.timestamp',
-        sortDirection: 'desc',
-        showAs: 'topics',
-        page
-      }
-    });
-    return data;
-  }, 1);
+  return withRetry(() => authenticatedGet('/api/search', {
+    in: 'titles',
+    term: '',
+    matchWords: 'all',
+    by: '',
+    categories: '',
+    searchChildren: 'false',
+    hasTags: '',
+    replies: '',
+    repliesFilter: 'atleast',
+    timeFilter: 'newer',
+    timeRange: '',
+    sortBy: 'topic.timestamp',
+    sortDirection: 'desc',
+    showAs: 'topics',
+    page
+  }), 1);
+}
+
+/** ממיר תגובת /api/search (מבנה posts[].topic מקונן, ראה תיעוד ליד fetchNewestTopics)
+ *  לרשימת אובייקטי topic שטוחה, כדי שנוכל להשתמש באותם buildTopicHeaderMessages
+ *  ו-browseTopicList כמו בשאר שלוחות עיון האשכולות. הערה קריטית: לאובייקט ה-topic
+ *  המקונן בתגובת החיפוש אין שדה user משלו (זה שדה של ה-post המכיל), לכן יש להעתיק
+ *  את user מה-post האב אל האובייקט השטוח - אחרת ההקראה תציג תמיד "אנונימי". */
+function parseNewestTopicsResponse(data) {
+  const posts = data.posts || data.topics || [];
+  return posts
+    .map((p) => {
+      if (p.tid) return p; // כבר במבנה topic שטוח
+      if (!p.topic) return null;
+      return { ...p.topic, user: p.topic.user || p.user };
+    })
+    .filter(Boolean);
 }
 
 /** רשימת כל הקטגוריות בפורום, כולל תתי-קטגוריות (NodeBB מחזיר עץ עם children) -
@@ -316,11 +429,10 @@ async function recentTopicsFlow(call, page) {
     ], { prependToNextAction: true });
   }
 
-  // תגובת חיפוש עם showAs=topics מחזירה מערך נושאים תחת posts או topics, בהתאם
-  // לגרסת NodeBB - כל פריט הוא כבר במבנה topic (tid, title, user, timestamp,
-  // postcount וכו'), ולא עטוף בתוך post.topic כמו בתוצאות חיפוש רגילות.
-  const rawResults = data.topics || data.posts || [];
-  const topics = rawResults.map((r) => (r.tid ? r : (r.topic ? { ...r.topic, tid: r.topic.tid || r.tid } : r)));
+  // תגובת /api/search (showAs=topics) מחזירה posts[] עם topic מקונן לכל פריט
+  // (ראה תיעוד ליד fetchNewestTopics/parseNewestTopicsResponse) - ממירים לרשימת
+  // topic שטוחה עם user מועתק מה-post האב, לשימוש ב-browseTopicList הרגיל.
+  const topics = parseNewestTopicsResponse(data);
 
   if (topics.length === 0) {
     return call.id_list_message([

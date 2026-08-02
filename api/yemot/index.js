@@ -678,18 +678,75 @@ async function voiceSearchFlow(call) {
   // downloadRecording/transcribeRecording למעלה. הערה: נתיב ההורדה חייב
   // להיות בפורמט ivr2: של Management API (שונה מ-VOICE_SEARCH_RECORD_PATH
   // היחסי שמשמש את call.read עצמו), עם סיומת .wav מפורשת.
-  let queryText;
-  try {
-    const recordingPath =
+let queryText;
+const recordingPath =
   `${VOICE_SEARCH_MGMT_PATH}/${VOICE_SEARCH_RECORD_FILENAME}.wav`;
-    const wavBuffer = await downloadRecording(recordingPath);
-    queryText = await transcribeRecording(wavBuffer);
-  } catch (err) {
-    console.error('[voiceSearchFlow] שגיאת תמלול', err.message);
-    return call.id_list_message([
-      { type: 'text', data: 'לא ניתן היה לתמלל את ההקלטה כרגע, אנא נסו שוב', removeInvalidChars: true }
-    ], { prependToNextAction: true });
+
+let wavBuffer;
+
+try {
+  console.log('[voiceSearchFlow] מוריד הקלטה:', recordingPath);
+
+  wavBuffer = await downloadRecording(recordingPath);
+
+  console.log(
+    '[voiceSearchFlow] ההקלטה הורדה בהצלחה, גודל:',
+    wavBuffer.length,
+    'bytes'
+  );
+} catch (err) {
+  console.error(
+    '[voiceSearchFlow] שגיאה בהורדת ההקלטה:',
+    err.response?.status || err.message
+  );
+
+  if (err.response?.data) {
+    console.error(
+      '[voiceSearchFlow] DownloadFile response:',
+      Buffer.isBuffer(err.response.data)
+        ? err.response.data.toString()
+        : err.response.data
+    );
   }
+
+  return call.id_list_message([
+    {
+      type: 'text',
+      data: 'לא ניתן היה להוריד את ההקלטה כרגע, אנא נסו שוב',
+      removeInvalidChars: true
+    }
+  ], { prependToNextAction: true });
+}
+
+try {
+  console.log('[voiceSearchFlow] שולח הקלטה לתמלול');
+
+  queryText = await transcribeRecording(wavBuffer);
+
+  console.log('[voiceSearchFlow] תמלול התקבל:', queryText);
+} catch (err) {
+  console.error(
+    '[voiceSearchFlow] שגיאה בתמלול:',
+    err.response?.status || err.message
+  );
+
+  if (err.response?.data) {
+    console.error(
+      '[voiceSearchFlow] transcribe response:',
+      Buffer.isBuffer(err.response.data)
+        ? err.response.data.toString()
+        : err.response.data
+    );
+  }
+
+  return call.id_list_message([
+    {
+      type: 'text',
+      data: 'לא ניתן היה לתמלל את ההקלטה כרגע, אנא נסו שוב',
+      removeInvalidChars: true
+    }
+  ], { prependToNextAction: true });
+}
 
   if (!queryText) {
     return call.id_list_message([

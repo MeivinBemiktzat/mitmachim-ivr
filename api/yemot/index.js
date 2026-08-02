@@ -18,9 +18,11 @@
  *   6. הרכבת הראוטר וייצוא ל-Vercel
  *
  * תפריט ראשי נוכחי: 1=פוסטים אחרונים, 2=נושאים אחרונים, 3=קטגוריות,
- * 4=חיפוש קולי (הקלטה -> תמלול -> חיפוש בפורום, ר' voiceSearchFlow), 6=עזרה.
- * שלוחות 0/5/8/9 (חזרה למיקום אחרון, תפריט אישי, הגדרות, מנהל) הוסרו במלואן
- * מהקוד, כולל שמירת מיקום ב-Vercel Blob וה-cache בזיכרון.
+ * 4=חיפוש קולי (הקלטה -> תמלול -> חיפוש בפורום, ר' voiceSearchFlow),
+ * 5=התראות אישיות (זיהוי לפי מספר הטלפון המתקשר, ר' notificationsFlow
+ * ו-api/userStore.js + api/register.js), 6=עזרה.
+ * שלוחות 0/8/9 (חזרה למיקום אחרון, הגדרות, מנהל) הוסרו במלואן מהקוד, כולל
+ * שמירת מיקום ב-Vercel Blob וה-cache בזיכרון.
  *
  * הערה: מוזיקת רקע (music_on_hold) אינה מנוהלת בקוד זה בכלל -
  * היא מוגדרת ומופעלת ברמת השלוחה בממשק ניהול ימות המשיח בלבד.
@@ -31,6 +33,10 @@
 const express = require('express');
 const { YemotRouter, ExitError } = require('yemot-router2');
 const axios = require('axios');
+// שלוחה 5 (התראות אישיות): שליפת שיוך מספר-טלפון -> פרטי התחברות בפורום,
+// שנשמר מראש דרך אתר ההרשמה (api/register.js). ר' תיעוד מפורט ב-userStore.js
+// ובפונקציה notificationsFlow למטה.
+const { getUserCredentials } = require('../userStore');
 
 /* ============================================================
  * 1. תשתית כללית
@@ -166,6 +172,56 @@ async function authenticatedGet(path, params) {
     }
     throw err;
   }
+}
+
+/**
+ * מתחבר לפורום כ-*משתמש קצה ספציפי* (לא משתמש השירות הקבוע) לצורך שלוחה 5
+ * (התראות אישיות). זהו session נפרד לגמרי מ-sessionCookie/loginServiceAccount
+ * למעלה: אסור בשום אופן לערבב בין השניים או לשמור את עוגיית המשתמש הקצה
+ * ב-sessionCookie המשותף - זה ישבש את משתמש השירות עבור כל שיחה אחרת שרצה
+ * באותו זמן על אותו תהליך Vercel (Node הוא single-threaded אך יכול לשרת
+ * מספר בקשות/שיחות "בו-זמנית" ברמת event loop). לכן ה-cookie של המשתמש
+ * הקצה מוחזק ומועבר כערך מקומי (משתנה רגיל בתוך הפונקציה הקוראת), לא
+ * ב-module-level state כמו משתמש השירות.
+ * זורק שגיאה ברורה (ולא רק סטטוס http) אם ההתחברות נכשלה - למשל סיסמא
+ * שגויה שהוזנה בטופס ההרשמה, או שהחשבון נחסם/נמחק בפורום.
+ * מחזיר את ה-Cookie header (string) לשימוש בקריאות הבאות מול הפורום.
+ */
+async function loginAsUser(username, password) {
+  const configRes = await http.get('/api/config');
+  const csrfToken = configRes.data?.csrf_token;
+  const initialCookie = extractCookie(configRes.headers['set-cookie']);
+  if (!csrfToken) throw new Error('לא התקבל csrf_token מ-/api/config');
+
+  const loginRes = await http.post('/login', { username, password }, {
+    headers: {
+      'x-csrf-token': csrfToken,
+      Cookie: initialCookie || '',
+      'Content-Type': 'application/json'
+    },
+    validateStatus: (s) => s < 500
+  });
+
+  if (loginRes.status >= 400) {
+    throw new Error(`התחברות המשתמש לפורום נכשלה (סטטוס ${loginRes.status}) - יתכן ששם המשתמש או הסיסמא שהוזנו בהרשמה שגויים`);
+  }
+
+  const loginCookie = extractCookie(loginRes.headers['set-cookie']);
+  const userCookie = loginCookie || initialCookie;
+  if (!userCookie) throw new Error('לא התקבלה עוגיית session אחרי התחברות המשתמש');
+  return userCookie;
+}
+
+/** שולף את רשימת ההתראות (notifications) האישיות של המשתמש המחובר, לפי
+ *  עוגיית ה-session שהתקבלה מ-loginAsUser. נתיב זהה למה שהדפדפן קורא לו
+ *  כשמשתמש מחובר פותח את פעמון ההתראות ב-NodeBB (/api/notifications).
+ *  נשלף מחדש בכל כניסה לשלוחה 5, ללא cache - כדי להקריא תמיד את המצב
+ *  העדכני ביותר, בדיוק כמו שאר שלוחות העיון בפרויקט. */
+async function fetchUserNotifications(userCookie) {
+  return withRetry(async () => {
+    const { data } = await http.get('/api/notifications', { headers: { Cookie: userCookie } });
+    return data;
+  }, 1);
 }
 
 /* ============================================================
@@ -483,6 +539,27 @@ function buildPostMessages(post, index, total) {
   ];
 }
 
+/** בונה מערך messages להקראת התראה אישית בודדת מ-/api/notifications.
+ *  מבנה התגובה של NodeBB לכל התראה כולל בדרך כלל bodyShort (טקסט קצר
+ *  מוכן להצגה, כבר מרונדר עם שם המשתמש הרלוונטי) ו/או bodyLong, וכן
+ *  datetimeISO לזמן היצירה. יש התראות ללא bodyShort (תלוי בסוג
+ *  ההתראה ב-NodeBB) - ולכן יש נפילה (fallback) לשרשור subject/from
+ *  ידני, כדי שלעולם לא תישמע הודעה ריקה. */
+function buildNotificationMessages(notif, index, total) {
+  const rawText = notif.bodyShort || notif.bodyLong || notif.subject
+    || `התראה מאת ${notif.user?.displayname || notif.user?.username || 'הפורום'}`;
+  const text = sanitizeForSpeech(rawText);
+  const date = new Date(notif.datetimeISO || notif.datetime || Date.now());
+  const dateStr = `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}/${date.getFullYear()}`;
+  const readLabel = notif.read ? 'נקראה' : 'חדשה';
+
+  return [
+    { type: 'text', data: `התראה ${index + 1} מתוך ${total} - ${readLabel}`, removeInvalidChars: true },
+    { type: 'date', data: dateStr },
+    { type: 'text', data: text || 'התראה ללא תוכן טקסטואלי', removeInvalidChars: true }
+  ];
+}
+
 /* ============================================================
  * 4. עזרי ניווט משותפים
  *
@@ -591,6 +668,91 @@ async function recentTopicsFlow(call, page) {
     onPrevPage: page > 1 ? () => recentTopicsFlow(call, page - 1) : null,
     context: `recenttopics:${page}`
   });
+}
+
+/* ---------- שלוחה 5: התראות אישיות (מזוהה לפי מספר הטלפון המתקשר) ----------
+ * זרימה:
+ *   1. שליפת פרטי ההתחברות לפורום ששויכו למספר הטלפון של המתקשר (call.phone)
+ *      מתוך Upstash Redis - הפרטים נשמרו מראש דרך אתר ההרשמה (api/register.js).
+ *   2. אם לא נמצא שיוך - הודעה ברורה שמכוונת את המתקשר להירשם קודם באתר.
+ *   3. התחברות לפורום *כמשתמש הזה עצמו* (loginAsUser, session נפרד לגמרי
+ *      ממשתמש השירות הקבוע ששמור ב-sessionCookie המשותף - ר' תיעוד ליד
+ *      loginAsUser) ושליפת רשימת ההתראות שלו (/api/notifications).
+ *   4. הקראת ההתראות בדיוק באותה חוויית ניווט (9/7/0/*) כמו שאר שלוחות
+ *      העיון בפרויקט (browseTopicList), באמצעות buildNotificationMessages.
+ * הערה חשובה: בשונה משאר השלוחות, אין כאן "פתיחה" של פריט לתוכן נוסף -
+ * ההתראה כולה מוקראת ישירות ברשימה עצמה, כי בניגוד לנושא/פוסט אין entity
+ * נפרד (topic/post) לפתוח בפועל - ההתראה היא כבר התוכן המלא הרלוונטי
+ * להשמעה. לכן "לפתיחה הקישו 1" מדלג פשוט להתראה הבאה (התנהגות זהה ל-9),
+ * כדי לשמור על עקביות מלאה עם המבנה של browseTopicList ללא כפילות קוד. */
+async function notificationsFlow(call) {
+  let creds;
+  try {
+    creds = await getUserCredentials(call.phone);
+  } catch (err) {
+    console.error('[notificationsFlow] שגיאה בשליפת פרטי משתמש', err.message);
+    return call.id_list_message([
+      { type: 'text', data: 'שירות ההתראות אינו זמין כרגע, אנא נסו שוב מאוחר יותר', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  if (!creds) {
+    return call.id_list_message([
+      { type: 'text', data: 'מספר הטלפון שלכם אינו רשום לשירות ההתראות', removeInvalidChars: true },
+      { type: 'text', data: 'כדי להירשם, אנא היכנסו לאתר ההרשמה ומלאו את הפרטים שלכם בפורום', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  let userCookie;
+  try {
+    userCookie = await loginAsUser(creds.username, creds.password);
+  } catch (err) {
+    console.error('[notificationsFlow] שגיאת התחברות למשתמש', err.message);
+    return call.id_list_message([
+      { type: 'text', data: 'לא ניתן היה להתחבר לחשבון שלכם בפורום, אנא ודאו שהפרטים שהזנתם באתר ההרשמה נכונים', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  let data;
+  try {
+    data = await fetchUserNotifications(userCookie);
+  } catch (err) {
+    console.error('[notificationsFlow] שגיאה בשליפת התראות', err.message);
+    return call.id_list_message([
+      { type: 'text', data: 'לא ניתן לטעון כרגע את ההתראות שלכם, אנא נסו שוב', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  const notifications = data?.notifications || [];
+  if (notifications.length === 0) {
+    return call.id_list_message([
+      { type: 'text', data: 'אין לכם כרגע התראות חדשות בפורום', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  let i = 0;
+  while (i < notifications.length) {
+    const notif = notifications[i];
+    const messages = [
+      ...buildNotificationMessages(notif, i, notifications.length),
+      navHintMessage()
+    ];
+
+    const key = await call.read(messages, 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '9' });
+
+    if (key === '9' || key === '1' || key === '') { i++; continue; }
+    if (key === '7') { i = Math.max(0, i - 1); continue; }
+    if (key === '0' || key === '*') throw new GoToMainMenu();
+    i++;
+  }
+
+  const endKey = await call.read([
+    { type: 'text', data: 'הגעתם לסוף רשימת ההתראות', removeInvalidChars: true },
+    { type: 'text', data: 'לחזרה להתחלת הרשימה הקישו 7, לתפריט הראשי הקישו כוכבית', removeInvalidChars: true }
+  ], 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '*' });
+
+  if (endKey === '7') return notificationsFlow(call);
+  throw new GoToMainMenu();
 }
 
 /* ---------- שלוחה 4: חיפוש קולי - הקלטה -> תמלול -> חיפוש בפורום ---------- */
@@ -1043,6 +1205,7 @@ router.get('/', async (call) => {
         { type: 'text', data: 'לנושאים אחרונים הקישו 2', removeInvalidChars: true },
         { type: 'text', data: 'לקטגוריות הקישו 3', removeInvalidChars: true },
         { type: 'text', data: 'לחיפוש קולי בפורום הקישו 4', removeInvalidChars: true },
+        { type: 'text', data: 'להתראות אישיות הקישו 5', removeInvalidChars: true },
         { type: 'text', data: 'לעזרה הקישו 6', removeInvalidChars: true }
       ], 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
 
@@ -1053,6 +1216,7 @@ router.get('/', async (call) => {
         case '2': await recentTopicsFlow(call, 1); break;
         case '3': await categoriesFlow(call); break;
         case '4': await voiceSearchFlow(call); break;
+        case '5': await notificationsFlow(call); break;
         case '6': await helpFlow(call); break;
         default: break; // הקשה לא מוכרת - חוזר לתפריט הראשי
       }

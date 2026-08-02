@@ -5,8 +5,7 @@
       "maxDuration": 25
     },
     "api/transcribe.py": {
-      "maxDuration": 20,
-      "runtime": "python3.12"
+      "maxDuration": 20
     }
   }
 }

@@ -77,10 +77,33 @@ async function withRetry(fn, retries = 1) {
  * לדוגמה: mitmachim.top/recent -> mitmachim.top/api/recent
  * ============================================================ */
 
-/** פוסטים/נושאים אחרונים בפורום - נשלף מחדש בכל קריאה, ללא cache. */
+/** פוסטים/נושאים אחרונים בפורום (ממוין לפי זמן פעילות אחרונה/תגובה אחרונה) -
+ *  נשלף מחדש בכל קריאה, ללא cache. */
 async function fetchRecentTopics(page = 1) {
   return withRetry(async () => {
     const { data } = await http.get('/api/recent', { params: { page } });
+    return data;
+  }, 1);
+}
+
+/** נושאים (אשכולות) חדשים, ממוינים לפי זמן *יצירת האשכול* (topic.timestamp) ולא
+ *  לפי זמן הפעילות/תגובה אחרונה - זהו הבדל מהותי מ-fetchRecentTopics/api/recent.
+ *  מבוסס על אותו מנגנון חיפוש שמניב את הרשימה בכתובת:
+ *  https://mitmachim.top/search?in=titles&sortBy=topic.timestamp&sortDirection=desc&showAs=topics
+ *  נשלף מחדש בכל קריאה, ללא cache. */
+async function fetchNewestTopics(page = 1) {
+  return withRetry(async () => {
+    const { data } = await http.get('/api/search', {
+      params: {
+        term: '',
+        in: 'titles',
+        matchWords: 'all',
+        sortBy: 'topic.timestamp',
+        sortDirection: 'desc',
+        showAs: 'topics',
+        page
+      }
+    });
     return data;
   }, 1);
 }
@@ -277,12 +300,15 @@ async function recentPostsFlow(call, page) {
   });
 }
 
-/* ---------- שלוחה 2: נושאים אחרונים (כותרת + מטא-דאטה של הנושא, לא ה-teaser) ---------- */
+/* ---------- שלוחה 2: נושאים אחרונים - אשכולות חדשים לפי זמן *יצירת האשכול*
+ * (topic.timestamp), תואם לרשימה המוצגת בכתובת:
+ * https://mitmachim.top/search?in=titles&sortBy=topic.timestamp&sortDirection=desc&showAs=topics
+ * שונה משלוחה 1 שמציגה פוסטים/נושאים לפי זמן פעילות/תגובה אחרונה (api/recent). ---------- */
 
 async function recentTopicsFlow(call, page) {
   let data;
   try {
-    data = await fetchRecentTopics(page);
+    data = await fetchNewestTopics(page);
   } catch (err) {
     console.error('[recentTopicsFlow] שגיאת שליפה', err.message);
     return call.id_list_message([
@@ -290,7 +316,12 @@ async function recentTopicsFlow(call, page) {
     ], { prependToNextAction: true });
   }
 
-  const topics = data.topics || [];
+  // תגובת חיפוש עם showAs=topics מחזירה מערך נושאים תחת posts או topics, בהתאם
+  // לגרסת NodeBB - כל פריט הוא כבר במבנה topic (tid, title, user, timestamp,
+  // postcount וכו'), ולא עטוף בתוך post.topic כמו בתוצאות חיפוש רגילות.
+  const rawResults = data.topics || data.posts || [];
+  const topics = rawResults.map((r) => (r.tid ? r : (r.topic ? { ...r.topic, tid: r.topic.tid || r.tid } : r)));
+
   if (topics.length === 0) {
     return call.id_list_message([
       { type: 'text', data: 'לא נמצאו נושאים בעת הזו', removeInvalidChars: true }

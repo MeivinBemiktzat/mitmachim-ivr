@@ -804,7 +804,7 @@ async function ensureRecordingFolder() {
   }
 
   console.log(`[voiceSearch] תת-שלוחת ההקלטות ${VOICE_SEARCH_MGMT_PATH} אינה קיימת, יוצר אוטומטית`);
-  await axios.get(`${YEMOT_MANAGEMENT_BASE}/UpdateExtension`, {
+  const { data: updateData } = await axios.get(`${YEMOT_MANAGEMENT_BASE}/UpdateExtension`, {
     params: {
       token,
       path: VOICE_SEARCH_MGMT_PATH,
@@ -813,6 +813,22 @@ async function ensureRecordingFolder() {
     },
     timeout: 10000
   });
+  // קריטי: Management API של ימות מחזיר HTTP 200 גם בכשלים לוגיים (למשל טוקן
+  // ללא הרשאה לשלוחה הזו) - השגיאה מגיעה בגוף התגובה (responseStatus/message),
+  // לא בקוד HTTP. בעבר תוצאת הקריאה לא נבדקה כלל, כך שאם היצירה נכשלה בשקט -
+  // recordingFolderEnsured עדיין הוסמן כ-true, וההורדה נכשלה אחר כך ב-404 בלי
+  // שום אינדיקציה לגורם האמיתי. עכשיו בודקים responseStatus ומוודאים בפועל
+  // (CheckIfFolderExists נוסף) שהשלוחה אכן נוצרה, לפני שמסמנים ensured=true.
+  if (updateData?.responseStatus && updateData.responseStatus !== 'OK') {
+    throw new Error(`יצירת תת-שלוחת ההקלטות ${VOICE_SEARCH_MGMT_PATH} נכשלה: ${updateData.message || JSON.stringify(updateData)}`);
+  }
+  const { data: verifyData } = await axios.get(`${YEMOT_MANAGEMENT_BASE}/CheckIfFolderExists`, {
+    params: { token, path: VOICE_SEARCH_MGMT_PATH },
+    timeout: 10000
+  });
+  if (!verifyData?.folderExists) {
+    throw new Error(`תת-שלוחת ההקלטות ${VOICE_SEARCH_MGMT_PATH} עדיין לא קיימת לאחר ניסיון היצירה - ייתכן שהטוקן (YEMOT_MANAGEMENT_TOKEN) חסר הרשאה למערכת/DID של פורום זה`);
+  }
   recordingFolderEnsured = true;
 }
 

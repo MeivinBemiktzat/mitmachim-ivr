@@ -26,6 +26,7 @@ const express = require('express');
 const { YemotRouter, ExitError } = require('yemot-router2');
 const NodeCache = require('node-cache');
 const axios = require('axios');
+const { put, head, del } = require('@vercel/blob');
 
 /* ============================================================
  * 1. תשתית כללית
@@ -212,14 +213,53 @@ const MENU_READ_OPTS = {
   block_zero_key: false
 };
 
-/** ID של שיחה -> מצב ניווט (מיקום אחרון) לצורך "חזרה למיקום האחרון". נשמר בזיכרון התהליך. */
-const lastPosition = new Map(); // callId -> { type: 'topic', tid, postIndex }
-
-function saveLastPosition(callId, state) {
-  lastPosition.set(callId, state);
+/**
+ * שמירת מצב משתמש (מיקום אחרון וכו') ב-Vercel Blob, לפי מספר טלפון.
+ * דורש משתנה סביבה BLOB_READ_WRITE_TOKEN (מוגדר אוטומטית ע"י Vercel כשמחברים Blob Store).
+ * נכשל בשקט (לא מפיל שיחה) אם האחסון לא זמין רגעית - רק רושם ללוג.
+ */
+function positionBlobKey(phone) {
+  return `ivr-state/${phone}.json`;
 }
-function getLastPosition(callId) {
-  return lastPosition.get(callId);
+
+async function saveLastPosition(phone, state) {
+  if (!phone) return;
+  try {
+    const body = JSON.stringify({ ...state, savedAt: Date.now() });
+    await put(positionBlobKey(phone), body, {
+      access: 'public',
+      contentType: 'application/json',
+      addRandomSuffix: false,
+      allowOverwrite: true
+    });
+    console.log(`[BLOB] נשמר מיקום עבור ${phone}:`, state);
+  } catch (err) {
+    console.error(`[BLOB] כשל בשמירת מיקום עבור ${phone}:`, err.message);
+  }
+}
+
+async function getLastPosition(phone) {
+  if (!phone) return null;
+  try {
+    const meta = await head(positionBlobKey(phone));
+    const { data } = await axios.get(meta.url, { timeout: 5000 });
+    console.log(`[BLOB] נטען מיקום עבור ${phone}:`, data);
+    return data;
+  } catch (err) {
+    if (err.response?.status !== 404 && err.status !== 404) {
+      console.error(`[BLOB] כשל בטעינת מיקום עבור ${phone}:`, err.message);
+    }
+    return null;
+  }
+}
+
+async function clearLastPosition(phone) {
+  if (!phone) return;
+  try {
+    await del(positionBlobKey(phone));
+  } catch (err) {
+    console.error(`[BLOB] כשל במחיקת מיקום עבור ${phone}:`, err.message);
+  }
 }
 
 /* ============================================================
@@ -325,7 +365,7 @@ async function browseTopicList(call, topics, { onOpen, onNextPage, onPrevPage, c
     const key = await call.read(messages, 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
 
     if (key === '1') {
-      saveLastPosition(call.callId, { type: 'list', context, index: i });
+      await saveLastPosition(call.phone, { type: 'list', context, index: i });
       return onOpen(topic);
     }
     if (key === '9') { i++; continue; }
@@ -449,7 +489,7 @@ router.get('/topic', async (call) => {
   const pageCount = data.pagination?.pageCount || 1;
 
   while (idx >= 0 && idx < posts.length) {
-    saveLastPosition(call.callId, { type: 'topic', tid, slug: slugParam, page, idx });
+    await saveLastPosition(call.phone, { type: 'topic', tid, slug: slugParam, page, idx });
 
     const messages = [
       ...buildPostMessages(posts[idx], idx, posts.length),
@@ -490,7 +530,7 @@ router.get('/topic', async (call) => {
 /* ---------- חזרה למיקום האחרון / המשך האזנה ---------- */
 
 router.get('/resume', async (call) => {
-  const pos = getLastPosition(call.callId);
+  const pos = await getLastPosition(call.phone);
   if (!pos || pos.type !== 'topic') {
     return call.id_list_message([
       { type: 'text', data: 'לא נמצא מיקום שמור מהשיחה הנוכחית', removeInvalidChars: true }
@@ -630,16 +670,24 @@ app.disable('x-powered-by');
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
+// לוג ברור לכל בקשה נכנסת מימות - חיוני לאבחון תקלות ב-Vercel Function Logs
+app.use((req, res, next) => {
+  console.log(`[YEMOT IN] ${req.method} ${req.originalUrl}`);
+  const send = res.send.bind(res);
+  res.send = (body) => {
+    console.log(`[YEMOT OUT] ${req.originalUrl} ->`, typeof body === 'string' ? body.slice(0, 300) : body);
+    return send(body);
+  };
+  next();
+});
+
 // בריאות המערכת - לבדיקה ידנית/ניטור
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', server: SERVER_BASE, cacheKeys: cache.keys().length, time: new Date().toISOString() });
 });
 
-// חיבור הראוטר של ימות - כל תעבורת ה-API extension מגיעה ל-/api/yemot
+// חיבור הראוטר של ימות - נתיב יחיד תואם ל-api_link שהוגדר בשלוחה
 app.use('/api/yemot', router.asExpressRouter);
-
-// גם על השורש, לנוחות אם מוגדר api_link ללא נתיב משנה
-app.use('/', router.asExpressRouter);
 
 if (require.main === module) {
   const port = process.env.PORT || 3000;

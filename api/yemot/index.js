@@ -604,7 +604,7 @@ const VOICE_SEARCH_EXTENSION_NUMBER = '8'; // מספר תת-שלוחה קבוע 
 // הערה קריטית שאומתה בפועל מלוג ימות אמיתי: ימות עצמה מצרפת '/' + file_name
 // ל-path בעת השמירה. path עם '/' בסוף (כפי שהיה כאן קודם) גרם לנתיב כפול
 // "8//query.wav" בפועל (val_2 שהוחזר מהשרת) - ולכן path חייב להיות בלי '/' בסוף.
-const VOICE_SEARCH_RECORD_PATH = VOICE_SEARCH_EXTENSION_NUMBER; // פורמט yemot-router2, בלי '/' בסוף
+const VOICE_SEARCH_RECORD_PATH = `/${VOICE_SEARCH_EXTENSION_NUMBER}`; // פורמט yemot-router2, בלי '/' בסוף
 const VOICE_SEARCH_MGMT_PATH = `ivr2:/${VOICE_SEARCH_EXTENSION_NUMBER}`; // פורמט Management API
 const VOICE_SEARCH_RECORD_FILENAME = 'query'; // ללא סיומת, ר' תיעוד file_name ב-index.d.ts
 

@@ -394,17 +394,23 @@ async function fetchTopic(tid, slug, page = 1) {
  *  ימות, אם הקובץ לא קיים בנתיב המדויק - השרת מחזיר 404 (לא שגיאת JSON) -
  *  לכן שגיאת 404 כאן פירושה כמעט תמיד שהנתיב/שם הקובץ לא תואם למה שימות
  *  שמרה בפועל (ולא בעיית רשת/הרשאות). */
-// מספר ניסיונות חוזרים אם ההורדה נכשלת מיד לאחר ההקלטה, ומרווח ביניהם.
-// הערה: כעת ששם הקובץ ייחודי לכל שיחה (ר' buildVoiceSearchFilename), אין
-// יותר סיכון של קבלת תוכן stale ממטמון - אבל עדיין ייתכן מרוץ תזמון קצר
-// בין רגע סיום השמירה בצד ימות לרגע קריאת ה-DownloadFile שלנו, מיד אחרי
-// שה-call.read מחזיר תוצאה. retry קצר עם המתנה קטנה סוגר את הפער הזה.
-const DOWNLOAD_RECORDING_MAX_ATTEMPTS = 3;
+// מס' ניסיונות/השהיה בין ניסיונות בהורדת ההקלטה. שני בעיות אמיתיות שנצפו
+// בפועל חוברו כאן לפתרון אחד:
+//  1) race זמני בין סיום call.read('record') לבין שהקובץ אכן נכתב בפועל
+//     בשרתי הקבצים של ימות (הבקשה הראשונה ל-DownloadFile חוזרת 404 אף
+//     שההקלטה כן נשמרה שבריר שנייה אחר כך) - נפתר ע"י ניסיונות חוזרים.
+//  2) קאשינג בצד שרתי ימות/CDN לפי הנתיב: DownloadFile מחזיר תוכן ישן
+//     (מטמון) ולא את התוכן העדכני שנכתב זה עתה על גבי אותו path+file_name
+//     קבוע - נצפה בפועל כ"מוצא כל פעם את ההקלטה הקודמת ולא את החדשה". זו
+//     לא שגיאת HTTP (200 עם תוכן ישן), כך שניסיון חוזר על אותו נתיב בלבד
+//     לא פותר אותה - הפתרון האמין היחיד הוא לעולם לא לחזור על אותו path+
+//     file_name בין שיחות: כעת לא מציינים file_name כלל ב-voiceSearchFlow -
+//     ימות עצמה ממספרת כל הקלטה חדשה אוטומטית (מספר גבוה ביותר בשלוחה + 1),
+//     כך שאין יותר path+file_name קבוע שחוזר על עצמו בין שיחות ושיכול "לשבור"
+//     שמפתחו הוא הנתיב עצמו. פרמטר ה-cache-busting (_cb) כאן הוא הגנה
+//     נוספת בלבד, למקרה שהמטמון מפתח גם לפי query string.
+const DOWNLOAD_RECORDING_RETRIES = 3;
 const DOWNLOAD_RECORDING_RETRY_DELAY_MS = 400;
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 async function downloadRecording(recordingPath) {
   const token = process.env.YEMOT_MANAGEMENT_TOKEN;
@@ -412,30 +418,28 @@ async function downloadRecording(recordingPath) {
     throw new Error('YEMOT_MANAGEMENT_TOKEN לא מוגדר בסביבה - לא ניתן להוריד הקלטות');
   }
   let lastErr;
-  for (let attempt = 1; attempt <= DOWNLOAD_RECORDING_MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 0; attempt <= DOWNLOAD_RECORDING_RETRIES; attempt++) {
     try {
       const { data } = await axios.get(`${YEMOT_MANAGEMENT_BASE}/DownloadFile`, {
-        params: { token, path: recordingPath },
+        params: { token, path: recordingPath, _cb: Date.now() },
         responseType: 'arraybuffer',
         timeout: 15000,
-        // מונע מפורשות מטמון בכל שכבה (proxy/CDN) בין אנחנו לימות - עכשיו
-        // שהנתיב ייחודי לכל שיחה זו הגנת-משנה בלבד, אך אין סיבה לא לכלול
-        // אותה: מבטיחה תמיד תוכן טרי לנתיב הספציפי הזה.
         headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' }
       });
       return Buffer.from(data);
     } catch (err) {
       lastErr = err;
-      if (err.response?.status === 404 && attempt < DOWNLOAD_RECORDING_MAX_ATTEMPTS) {
-        console.warn(`[downloadRecording] 404 בנתיב ${recordingPath}, ניסיון ${attempt}/${DOWNLOAD_RECORDING_MAX_ATTEMPTS} - ממתין ומנסה שוב (יתכן מרוץ תזמון בשמירת הקובץ)`);
-        await sleep(DOWNLOAD_RECORDING_RETRY_DELAY_MS);
+      // רק 404 שווה לנסות שוב (race זמני בכתיבת הקובץ) - שגיאות אחרות
+      // (רשת/הרשאות) לא ייפתרו בהמתנה קצרה ועדיף להיכשל מיד.
+      if (err.response?.status === 404 && attempt < DOWNLOAD_RECORDING_RETRIES) {
+        await new Promise((r) => setTimeout(r, DOWNLOAD_RECORDING_RETRY_DELAY_MS * (attempt + 1)));
         continue;
       }
       break;
     }
   }
   if (lastErr?.response?.status === 404) {
-    throw new Error(`קובץ ההקלטה לא נמצא בנתיב ${recordingPath} לאחר ${DOWNLOAD_RECORDING_MAX_ATTEMPTS} ניסיונות - יתכן שההקלטה לא נשמרה או ששם הקובץ שונה`);
+    throw new Error(`קובץ ההקלטה לא נמצא בנתיב ${recordingPath} לאחר ${DOWNLOAD_RECORDING_RETRIES + 1} ניסיונות - יתכן שההקלטה לא נשמרה או ששם הקובץ שונה`);
   }
   throw lastErr;
 }
@@ -824,27 +828,33 @@ const VOICE_SEARCH_EXTENSION_TITLE = 'FreeivrVoiceSearchRecordings'; // שם ת�
 // הערה קריטית שאומתה בפועל מלוג ימות אמיתי: ימות עצמה מצרפת '/' + file_name
 // ל-path בעת השמירה. path עם '/' בסוף גורם לנתיב כפול (למשל "...//query.wav")
 // - ולכן path חייב להיות בלי '/' בסוף.
-const VOICE_SEARCH_RECORD_PATH = VOICE_SEARCH_EXTENSION_NUMBER; // פורמט yemot-router2, בלי '/' בסוף
+// הערה קריטית (תוקן): לפי תיעוד רשמי של ימות (מודול API, סעיף "הגדרות עבור
+// הקלטות"), path של הקלטה חייב להתחיל ב-'/' ואסור לו להסתיים ב-'/'
+// (הדוגמה הרשמית: path=/8). בעבר path כאן היה בלי '/' מוביל כלל ("9"), מה
+// שסביר שגרם לימות לפרש את הנתיב באופן שגוי (יחסית לשלוחה נוכחית/ברירת
+// מחדל, ולא לשלוחה 9 המבוקשת בפועל) - וזו הסיבה הסבירה ביותר לכך שההקלטה
+// לא נמצאה בנתיב המצופה "בכלל", לא רק race זמני.
+const VOICE_SEARCH_RECORD_PATH = `/${VOICE_SEARCH_EXTENSION_NUMBER}`; // פורמט תקין לפי תיעוד ימות: '/' מוביל, בלי '/' בסוף
 const VOICE_SEARCH_MGMT_PATH = `ivr2:/${VOICE_SEARCH_EXTENSION_NUMBER}`; // פורמט Management API
-// הערה קריטית (תוקן): בעבר נעשה שימוש בשם קובץ קבוע ('query') לכל ההקלטות.
-// בפועל התגלו שני תסמינים שנובעים מאותה סיבת שורש: (1) הורדת קובץ בנתיב קבוע
-// דרך DownloadFile מחזירה לעיתים גרסה שמורה-במטמון (stale) מהקריאה הקודמת
-// באותו נתיב, במקום ההקלטה החדשה שזה עתה נשמרה - זה בדיוק התסמין שנצפה
-// בפועל בפורום מתמחים טופ ("תמיד מוצא את החיפוש הקודם"); (2) גם ללא מטמון,
-// קיים מרוץ תזמון אפשרי בין סיום כתיבת הקובץ בצד ימות לבין קריאת ההורדה
-// המיידית שלנו, שיכול לגרום ל-404 חולף (כפי שנצפה בלוג freeivr). הפתרון:
-// כל שיחה מקבלת שם קובץ ייחודי משלה, מבוסס על callId (מזהה שיחה ייחודי
-// שסופק ע"י yemot-router2, ר' call.callId) - כך שאין שני שיחות שיכולות
-// אי-פעם לחלוק אותו נתיב, ולכן אין אפשרות תיאורטית למטמון stale להחזיר
-// תשובה שגויה, וכל הורדה יודעת בוודאות שהיא מורידה בדיוק את ההקלטה של
-// השיחה הנוכחית ולא של שיחה קודמת כלשהי.
-function buildVoiceSearchFilename(call) {
-  const rawCallId = (call && call.callId) ? String(call.callId) : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  // ניקוי לתווים בטוחים לשם קובץ בלבד (אותיות/ספרות/מקף/קו-תחתון)
-  const safeId = rawCallId.replace(/[^a-zA-Z0-9_-]/g, '');
-  return `query_${safeId}`;
-}
 
+// הערה קריטית (תוקן - הבעיה של "מוצא כל פעם את ההקלטה הקודמת"): כאשר כל
+// שיחה מקליטה תמיד לאותו שם קובץ קבוע ("query"), שרתי ימות (ו/או שכבת CDN
+// שלפניהם) מטמינים את הקובץ לפי הנתיב path+file_name. כתיבה מחדש על אותו
+// נתיב לא בהכרח "שוברת" את המטמון הזה בצד ימות - כך שקריאת DownloadFile
+// לפעמים מחזירה את בייטי ההקלטה *הקודמת* (200 תקין, לא שגיאה), למרות
+// שהוקלטה הקלטה חדשה. זה נצפה בפועל: "החיפוש עובד פעם ראשונה בלבד, ומשם
+// כל שיחה מוצאת/מתמללת את מה שנשמר בשיחה הקודמת".
+//
+// תוקן סופית לפי תיעוד רשמי של ימות (מודול API, "הגדרות עבור הקלטות",
+// הערך החמישי): כאשר לא מציינים file_name כלל, ימות עצמה ממספרת את הקובץ
+// אוטומטית כ"מספר הגבוה ביותר בשלוחה + 1" - כלומר כל הקלטה מקבלת מעצמה שם
+// קובץ חדש וייחודי (101, 102, 103...) בלי שום צורך שלנו לנחש/לייצר שם.
+// זה גם מבטל לחלוטין את מנגנון "שינוי שם לקובץ קיים" (הערך השמיני בתיעוד),
+// שרלוונטי רק כאשר יש התנגשות בשם קובץ מפורש - ומכיוון שאנחנו לא קובעים
+// שם קבוע יותר, אין יותר התנגשות שיכולה לגרום לרינדור מוזר/מושהה של הקובץ
+// הישן, לקאש שמפתחו path+file_name קבוע, או להחזרת קובץ לא-מעודכן.
+// המקור היחיד לאמת לגבי הנתיב שבו נשמר הקובץ הוא הערך שימות מחזירה בפועל
+// מ-call.read (recordResult / val_2) - ר' הטיפול בו למטה.
 let recordingFolderEnsured = false;
 
 /** מוודאת שהתיקייה הייעודית לשמירת הקלטות החיפוש קיימת במערכת ימות, ואם לא -
@@ -912,20 +922,16 @@ async function voiceSearchFlow(call) {
 
   // שלב 1: הקלטת השאילתה. no_confirm_menu=true מדלג על "לאישור הקישו 2" -
   // המאזין פשוט מקליט ומקיש # ועוברים ישר לתמלול, לחוויה זורמת יותר בחיפוש.
-  //
-  // הערה קריטית (תוקן): בעבר נעשה שימוש בשם קובץ קבוע לכל השיחות ('query'),
-  // מה שגרם לתסמין של הורדת הקלטה ישנה/stale במקום החדשה (ר' תיעוד מפורט
-  // ליד buildVoiceSearchFilename למעלה). כעת כל שיחה מקבלת שם קובץ ייחודי
-  // (voiceSearchFilename), כך שאין אפשרות לקונפליקט בין שיחות/מטמון stale.
-  const voiceSearchFilename = buildVoiceSearchFilename(call);
+  // בכוונה לא מציינים file_name: ימות תמספר את הקובץ אוטומטית כ"מספר גבוה
+  // ביותר בשלוחה + 1" (ר' הערה למעלה) - כך שכל הקלטה מקבלת נתיב חדש וייחודי
+  // משל עצמה, ולא נכנסים למנגנון "שינוי שם לקובץ קיים" או לבעיית קאש
+  // אפשרית על נתיב קבוע וחוזר.
   const recordResult = await call.read([
     { type: 'text', data: 'חיפוש קולי בפורום', removeInvalidChars: true },
     { type: 'text', data: 'אנא אמרו את מה שתרצו לחפש לאחר הצליל, ובסיום הקישו סולמית', removeInvalidChars: true }
   ], 'record', {
     path: VOICE_SEARCH_RECORD_PATH,
-    file_name: voiceSearchFilename,
     no_confirm_menu: true,
-    append_to_existing_file: false,
     min_length: 1,
     max_length: 20
   });

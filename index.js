@@ -12,9 +12,12 @@
  *   1. תשתית: קבועים, cache, HTTP client לפורום
  *   2. שכבת נתונים: פונקציות שמביאות מידע מ-NodeBB API (עם retry)
  *   3. שכבת הקראה: המרת תוכן פורום למבני message של ימות (טיפול בתאריכים, מחברים וכו')
- *   4. שכבת מוזיקת רקע: ניהול music_on_hold ושמירת מיקום השמעה
+ *   4. עזרי ניווט משותפים ושמירת מיקום האזנה
  *   5. שכבת ניווט: תפריטים (ראשי, קטגוריות, אשכולות, הודעות, חיפוש, אישי, עזרה, הגדרות, מנהל)
  *   6. הרכבת הראוטר וייצוא ל-Vercel
+ *
+ * הערה: מוזיקת רקע (music_on_hold) אינה מנוהלת בקוד זה בכלל -
+ * היא מוגדרת ומופעלת ברמת השלוחה בממשק ניהול ימות המשיח בלבד.
  */
 
 'use strict';
@@ -39,9 +42,6 @@ const CACHE_TTL = {
   category: 90,      // נושאים בקטגוריה מסוימת
   topic: 60          // הודעות באשכול
 };
-
-// שם קובץ המוזיקה שהוגדר בימות עבור "צמאה" (music_on_hold) - יש להעלות בשם זה בממשק הניהול
-const BACKGROUND_MUSIC_NAME = process.env.YEMOT_MUSIC_NAME || 'tzamea';
 
 // הגדרות HTTP client לפורום - keep-alive + timeout סביר + compression
 const http = axios.create({
@@ -187,33 +187,13 @@ function buildPostMessages(post, index, total) {
 }
 
 /* ============================================================
- * 4. שכבת מוזיקת רקע
- * ------------------------------------------------------------
- * ימות המשיח תומכת במוזיקת המתנה על ידי הוספת message מסוג
- * music_on_hold בתחילת רצף ה-messages המושמע. המוזיקה מתנגנת
- * "ברקע" בזמן שהמערכת טוענת/מקריאה, ועוצרת אוטומטית כשעוברים ל-read.
+ * 4. עזרי ניווט משותפים
  *
- * "המשך מהמקום שנעצר" - ימות אינה חושפת API להמשך המוזיקה בדיוק
- * מהשנייה שבה נעצרה בין שלוחות. הפתרון הקרוב ביותר בתיעוד הרשמי:
- * לצרף musicName בכל id_list_message/read לאורך כל השיחה (כך שהיא
- * "לא מתחילה מחדש" כניגון נפרד בכל תפריט אלא ממשיכה ברצף אחד קבוע
- * לכל אורך השיחה - כפי שממומש בפועל על ידי מנוע ימות), ולא לשלוח
- * את אותה קריאת music_on_hold פעמיים ברצף לאותה שיחה ללא צורך.
- * אנו עוקבים per-call אחרי מצב "האם המוזיקה כבר הופעלה" כדי להימנע
- * מאיפוס מיותר, ומצרפים אותה מחדש בכל מעבר תפריט כנדרש.
- * ============================================================ */
-
-function musicMessage() {
-  return { type: 'music_on_hold', data: { musicName: BACKGROUND_MUSIC_NAME } };
-}
-
-/** מוסיף מוזיקת רקע לפני מערך הודעות נתון (למסכי טעינה/הקראה). */
-function withMusic(messages) {
-  return [musicMessage(), ...messages];
-}
-
-/* ============================================================
- * 5. עזרי ניווט משותפים
+ * הערה לגבי מוזיקת רקע: מוזיקת ההמתנה ("צמאה") אינה מנוהלת כאן
+ * בקוד. היא מוגדרת ברמת השלוחה בממשק הניהול של ימות המשיח
+ * (הגדרת music_on_hold על השלוחה עצמה), כפי שממומש באופן טבעי
+ * על ידי מנוע ימות - ולא כפרמטר שנשלח בכל תשובת API. פירוט
+ * מלא נמצא בקובץ ההוראות (הוראות-הקמה.md).
  * ============================================================ */
 
 const NAV_HINT = 'הקישו 9 להבא, 7 לקודם, 0 לחזרה, כוכבית לתפריט הראשי, סולמית לדף הבית';
@@ -243,7 +223,7 @@ function getLastPosition(callId) {
 }
 
 /* ============================================================
- * 6. הראוטר הראשי - כל זרימת השיחה
+ * 5. הראוטר הראשי - כל זרימת השיחה
  * ============================================================ */
 
 const router = YemotRouter({
@@ -252,9 +232,9 @@ const router = YemotRouter({
   uncaughtErrorHandler: async (call, error) => {
     console.error('שגיאה לא מטופלת בשיחה', call.callId, error);
     try {
-      call.id_list_message(withMusic([
+      call.id_list_message([
         { type: 'text', data: 'אירעה תקלה זמנית במערכת. אנא נסו שוב מאוחר יותר', removeInvalidChars: true }
-      ]));
+      ]);
     } catch (_) { /* השיחה כבר בתהליך סגירה */ }
   }
 });
@@ -262,7 +242,7 @@ const router = YemotRouter({
 /* ---------- תפריט ראשי ---------- */
 
 router.get('/', async (call) => {
-  const choice = await call.read(withMusic([
+  const choice = await call.read([
     { type: 'text', data: 'ברוכים הבאים לפורום מתמחים טופ הקולי', removeInvalidChars: true },
     { type: 'text', data: 'להאזנה לפוסטים אחרונים הקישו 1', removeInvalidChars: true },
     { type: 'text', data: 'לנושאים אחרונים הקישו 2', removeInvalidChars: true },
@@ -272,7 +252,7 @@ router.get('/', async (call) => {
     { type: 'text', data: 'לעזרה הקישו 6', removeInvalidChars: true },
     { type: 'text', data: 'להגדרות הקישו 8', removeInvalidChars: true },
     { type: 'text', data: 'לחזרה למיקום האחרון הקישו 0', removeInvalidChars: true }
-  ]), 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
+  ], 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
 
   switch (choice) {
     case '1': return call.go_to_folder('/recent');
@@ -295,16 +275,16 @@ async function recentFlow(call, page) {
   try {
     data = await fetchRecentTopics(page);
   } catch (err) {
-    return call.id_list_message(withMusic([
+    return call.id_list_message([
       { type: 'text', data: 'לא ניתן לטעון כרגע פוסטים אחרונים, אנא נסו שוב', removeInvalidChars: true }
-    ]));
+    ]);
   }
 
   const topics = data.topics || [];
   if (topics.length === 0) {
-    return call.id_list_message(withMusic([
+    return call.id_list_message([
       { type: 'text', data: 'לא נמצאו פוסטים בעת הזו', removeInvalidChars: true }
-    ]));
+    ]);
   }
 
   await browseTopicList(call, topics, {
@@ -335,12 +315,12 @@ async function browseTopicList(call, topics, { onOpen, onNextPage, onPrevPage, c
   let i = 0;
   while (i < topics.length) {
     const topic = topics[i];
-    const messages = withMusic([
+    const messages = [
       { type: 'text', data: `פריט ${i + 1} מתוך ${topics.length}`, removeInvalidChars: true },
       ...buildTopicHeaderMessages(topic),
       { type: 'text', data: 'לפתיחה הקישו 1', removeInvalidChars: true },
       navHintMessage()
-    ]);
+    ];
 
     const key = await call.read(messages, 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
 
@@ -358,12 +338,12 @@ async function browseTopicList(call, topics, { onOpen, onNextPage, onPrevPage, c
   }
 
   // הגענו לסוף הרשימה בעמוד הנוכחי
-  const nextKey = await call.read(withMusic([
+  const nextKey = await call.read([
     { type: 'text', data: 'הגעתם לסוף הרשימה בעמוד הנוכחי', removeInvalidChars: true },
     { type: 'text', data: onNextPage ? 'לעמוד הבא הקישו 9' : '', removeInvalidChars: true },
     { type: 'text', data: onPrevPage ? 'לעמוד הקודם הקישו 7' : '', removeInvalidChars: true },
     { type: 'text', data: 'לתפריט הראשי הקישו 0', removeInvalidChars: true }
-  ]), 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '0' });
+  ], 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '0' });
 
   if (nextKey === '9' && onNextPage) return onNextPage();
   if (nextKey === '7' && onPrevPage) return onPrevPage();
@@ -377,27 +357,27 @@ router.get('/categories', async (call) => {
   try {
     data = await fetchCategories();
   } catch (err) {
-    return call.id_list_message(withMusic([
+    return call.id_list_message([
       { type: 'text', data: 'לא ניתן לטעון כרגע את רשימת הקטגוריות, אנא נסו שוב', removeInvalidChars: true }
-    ]));
+    ]);
   }
 
   const categories = (data.categories || []).filter((c) => !c.disabled);
   if (categories.length === 0) {
-    return call.id_list_message(withMusic([
+    return call.id_list_message([
       { type: 'text', data: 'לא נמצאו קטגוריות', removeInvalidChars: true }
-    ]));
+    ]);
   }
 
   let i = 0;
   while (i < categories.length) {
     const cat = categories[i];
-    const key = await call.read(withMusic([
+    const key = await call.read([
       { type: 'text', data: `קטגוריה ${i + 1} מתוך ${categories.length}`, removeInvalidChars: true },
       { type: 'text', data: sanitizeForSpeech(cat.name), removeInvalidChars: true },
       { type: 'text', data: 'לכניסה הקישו 1', removeInvalidChars: true },
       navHintMessage()
-    ]), 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
+    ], 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
 
     if (key === '1') {
       return call.go_to_folder(`/category?cid=${cat.cid}&slug=${encodeURIComponent(cat.slug || '')}&page=1`);
@@ -422,16 +402,16 @@ router.get('/category', async (call) => {
   try {
     data = await fetchCategoryTopics(cid, slugParam, page);
   } catch (err) {
-    return call.id_list_message(withMusic([
+    return call.id_list_message([
       { type: 'text', data: 'לא ניתן לטעון כרגע את תוכן הקטגוריה, אנא נסו שוב', removeInvalidChars: true }
-    ]));
+    ]);
   }
 
   const topics = data.topics || [];
   if (topics.length === 0) {
-    return call.id_list_message(withMusic([
+    return call.id_list_message([
       { type: 'text', data: 'אין אשכולות בקטגוריה זו כרגע', removeInvalidChars: true }
-    ]));
+    ]);
   }
 
   await browseTopicList(call, topics, {
@@ -454,16 +434,16 @@ router.get('/topic', async (call) => {
   try {
     data = await fetchTopic(tid, slugParam, page);
   } catch (err) {
-    return call.id_list_message(withMusic([
+    return call.id_list_message([
       { type: 'text', data: 'לא ניתן לטעון כרגע את האשכול, אנא נסו שוב', removeInvalidChars: true }
-    ]));
+    ]);
   }
 
   const posts = data.posts || [];
   if (posts.length === 0) {
-    return call.id_list_message(withMusic([
+    return call.id_list_message([
       { type: 'text', data: 'לא נמצאו הודעות באשכול זה', removeInvalidChars: true }
-    ]));
+    ]);
   }
 
   const pageCount = data.pagination?.pageCount || 1;
@@ -471,10 +451,10 @@ router.get('/topic', async (call) => {
   while (idx >= 0 && idx < posts.length) {
     saveLastPosition(call.callId, { type: 'topic', tid, slug: slugParam, page, idx });
 
-    const messages = withMusic([
+    const messages = [
       ...buildPostMessages(posts[idx], idx, posts.length),
       navHintMessage()
-    ]);
+    ];
 
     const key = await call.read(messages, 'tap', { ...MENU_READ_OPTS, max_digits: 2, allow_empty: true, empty_val: '9' });
 
@@ -482,10 +462,10 @@ router.get('/topic', async (call) => {
       if (idx + 1 < posts.length) { idx++; continue; }
       // סוף עמוד ההודעות - האם יש עמוד נוסף באשכול?
       if (page < pageCount) return call.go_to_folder(`/topic?tid=${tid}&slug=${encodeURIComponent(slugParam)}&page=${page + 1}&idx=0`);
-      const endKey = await call.read(withMusic([
+      const endKey = await call.read([
         { type: 'text', data: 'הגעתם לסוף האשכול', removeInvalidChars: true },
         { type: 'text', data: 'לחזרה לקטגוריה הקישו 0, לתפריט הראשי הקישו כוכבית', removeInvalidChars: true }
-      ]), 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '0' });
+      ], 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '0' });
       if (endKey === '0') return call.go_to_folder('/categories');
       return call.go_to_folder('/');
     }
@@ -512,9 +492,9 @@ router.get('/topic', async (call) => {
 router.get('/resume', async (call) => {
   const pos = getLastPosition(call.callId);
   if (!pos || pos.type !== 'topic') {
-    return call.id_list_message(withMusic([
+    return call.id_list_message([
       { type: 'text', data: 'לא נמצא מיקום שמור מהשיחה הנוכחית', removeInvalidChars: true }
-    ]), { prependToNextAction: true });
+    ], { prependToNextAction: true });
   }
   return call.go_to_folder(`/topic?tid=${pos.tid}&slug=${encodeURIComponent(pos.slug || '')}&page=${pos.page}&idx=${pos.idx}`);
 });
@@ -522,31 +502,31 @@ router.get('/resume', async (call) => {
 /* ---------- חיפוש ---------- */
 
 router.get('/search', async (call) => {
-  const term = await call.read(withMusic([
+  const term = await call.read([
     { type: 'text', data: 'אנא הקליטו את מילת החיפוש ולאחריה הקישו סולמית', removeInvalidChars: true }
-  ]), 'stt', { max_digits: '' });
+  ], 'stt', { max_digits: '' });
 
   const query = (term || '').trim();
   if (!query) {
-    return call.id_list_message(withMusic([
+    return call.id_list_message([
       { type: 'text', data: 'לא זוהתה מילת חיפוש, נסו שוב מאוחר יותר', removeInvalidChars: true }
-    ]));
+    ]);
   }
 
   let data;
   try {
     data = await searchForum(query, 1);
   } catch (err) {
-    return call.id_list_message(withMusic([
+    return call.id_list_message([
       { type: 'text', data: 'שגיאה בביצוע החיפוש, אנא נסו שוב', removeInvalidChars: true }
-    ]));
+    ]);
   }
 
   const results = data.posts || data.topics || [];
   if (results.length === 0) {
-    return call.id_list_message(withMusic([
+    return call.id_list_message([
       { type: 'text', data: 'לא נמצאו תוצאות התואמות את החיפוש', removeInvalidChars: true }
-    ]));
+    ]);
   }
 
   const asTopics = results.map((r) => r.topic ? { ...r.topic, tid: r.topic.tid || r.tid } : r);
@@ -562,11 +542,11 @@ router.get('/search', async (call) => {
 /* ---------- תפריט אישי ---------- */
 
 router.get('/personal', async (call) => {
-  const key = await call.read(withMusic([
+  const key = await call.read([
     { type: 'text', data: 'תפריט אישי', removeInvalidChars: true },
     { type: 'text', data: 'להמשך האזנה מהמקום האחרון הקישו 1', removeInvalidChars: true },
     { type: 'text', data: 'לחזרה לתפריט הראשי הקישו 0', removeInvalidChars: true }
-  ]), 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
+  ], 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
 
   if (key === '1') return call.go_to_folder('/resume');
   return call.go_to_folder('/');
@@ -575,7 +555,7 @@ router.get('/personal', async (call) => {
 /* ---------- עזרה ---------- */
 
 router.get('/help', async (call) => {
-  await call.id_list_message(withMusic([
+  await call.id_list_message([
     { type: 'text', data: 'מדריך ניווט מהיר', removeInvalidChars: true },
     { type: 'text', data: 'בכל שלב, הקישו 9 למעבר להודעה או פריט הבא', removeInvalidChars: true },
     { type: 'text', data: 'הקישו 7 לחזרה להודעה או לפריט הקודם', removeInvalidChars: true },
@@ -583,24 +563,24 @@ router.get('/help', async (call) => {
     { type: 'text', data: 'הקישו כוכבית בכל עת לחזרה לתפריט הראשי', removeInvalidChars: true },
     { type: 'text', data: 'הקישו סולמית לחזרה מיידית לדף הבית', removeInvalidChars: true },
     { type: 'text', data: 'בתוך אשכול, ניתן להקיש את מספר ההודעה כדי לדלג ישירות אליה', removeInvalidChars: true }
-  ]), { prependToNextAction: true });
+  ], { prependToNextAction: true });
   return call.go_to_folder('/');
 });
 
 /* ---------- הגדרות ---------- */
 
 router.get('/settings', async (call) => {
-  const key = await call.read(withMusic([
+  const key = await call.read([
     { type: 'text', data: 'תפריט הגדרות', removeInvalidChars: true },
     { type: 'text', data: 'לניקוי המטמון והבאת תוכן עדכני הקישו 1', removeInvalidChars: true },
     { type: 'text', data: 'לחזרה לתפריט הראשי הקישו 0', removeInvalidChars: true }
-  ]), 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
+  ], 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
 
   if (key === '1') {
     cache.flushAll();
-    await call.id_list_message(withMusic([
+    await call.id_list_message([
       { type: 'text', data: 'המטמון נוקה בהצלחה', removeInvalidChars: true }
-    ]), { prependToNextAction: true });
+    ], { prependToNextAction: true });
   }
   return call.go_to_folder('/');
 });
@@ -610,33 +590,33 @@ router.get('/settings', async (call) => {
 router.get('/admin', async (call) => {
   const adminPin = process.env.ADMIN_PIN;
   if (!adminPin) {
-    return call.id_list_message(withMusic([
+    return call.id_list_message([
       { type: 'text', data: 'תפריט מנהל אינו מוגדר במערכת', removeInvalidChars: true }
-    ]));
+    ]);
   }
 
-  const pin = await call.read(withMusic([
+  const pin = await call.read([
     { type: 'text', data: 'אנא הקישו את קוד המנהל', removeInvalidChars: true }
-  ]), 'tap', { max_digits: 10, min_digits: 1, sec_wait: 8, typing_playback_mode: 'No' });
+  ], 'tap', { max_digits: 10, min_digits: 1, sec_wait: 8, typing_playback_mode: 'No' });
 
   if (pin !== adminPin) {
-    return call.id_list_message(withMusic([
+    return call.id_list_message([
       { type: 'text', data: 'קוד שגוי', removeInvalidChars: true }
-    ]));
+    ]);
   }
 
-  const key = await call.read(withMusic([
+  const key = await call.read([
     { type: 'text', data: 'תפריט מנהל', removeInvalidChars: true },
     { type: 'text', data: 'לניקוי כל המטמון הקישו 1', removeInvalidChars: true },
     { type: 'text', data: `סטטיסטיקת מטמון: ${cache.keys().length} רשומות`, removeInvalidChars: true },
     { type: 'text', data: 'לחזרה הקישו 0', removeInvalidChars: true }
-  ]), 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
+  ], 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
 
   if (key === '1') {
     cache.flushAll();
-    await call.id_list_message(withMusic([
+    await call.id_list_message([
       { type: 'text', data: 'המטמון נוקה', removeInvalidChars: true }
-    ]), { prependToNextAction: true });
+    ], { prependToNextAction: true });
   }
   return call.go_to_folder('/');
 });

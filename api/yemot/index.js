@@ -688,7 +688,7 @@ async function recentTopicsFlow(call, page) {
 async function notificationsFlow(call) {
   let creds;
   try {
-    creds = await getUserCredentials(call.phone);
+    creds = await getUserCredentials(call.phone, 'mitmachim');
   } catch (err) {
     console.error('[notificationsFlow] שגיאה בשליפת פרטי משתמש', err.message);
     return call.id_list_message([

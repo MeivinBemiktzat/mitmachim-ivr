@@ -344,10 +344,26 @@ async function downloadRecording(recordingPath) {
 /** שולח את בייטי ה-wav לפונקציית התמלול (Python, api/transcribe.py) ומחזיר
  *  את הטקסט המתומלל. ריפוד השקט לפני/אחרי (כדי שהתמלול לא "יבלע" חצאי מילים
  *  בתחילת/סוף ההקלטה) מתבצע בצד הפייתון על קובץ ה-wav שהתקבל, לא בצד ימות -
- *  אין אפשרות ב-type='record' של ימות להוסיף שקט לתוך ההקלטה עצמה. */
+ *  אין אפשרות ב-type='record' של ימות להוסיף שקט לתוך ההקלטה עצמה.
+ *
+ *  הערה קריטית לגבי 401 שהתקבל בפועל: אומת ש-api/transcribe.py עצמו אינו
+ *  בודק שום טוקן/הרשאה כלל, ובכל שגיאה מחזיר קוד 500 (לא 401) - כלומר קוד
+ *  401 לא יכול לבוא מהקוד של הפייתון עצמו. הסיבה הסבירה ביותר: הגנת
+ *  "Deployment Protection" ברמת הפלטפורמה של Vercel (Password/SSO/Standard
+ *  Protection) שחוסמת את הבקשה עוד לפני שהיא מגיעה לקוד - כי זו קריאת שרת-אל-
+ *  עצמו (מ-index.js אל api/transcribe) ולה אין session דפדפן/הרשאה כמו לגולש
+ *  רגיל. אם מוגדרת הגנה כזו על הפרויקט ב-Vercel, יש להנפיק Protection Bypass
+ *  Secret (בהגדרות הפרויקט ב-Vercel: Settings -> Deployment Protection ->
+ *  Protection Bypass for Automation) ולהגדירו במשתנה הסביבה
+ *  VERCEL_PROTECTION_BYPASS_SECRET - הקוד להלן ישלח אותו אוטומטית ככותרת אם
+ *  הוגדר, ולא ישנה התנהגות כלל אם לא (100% תואם לאחור). */
 async function transcribeRecording(wavBuffer) {
+  const bypassSecret = process.env.VERCEL_PROTECTION_BYPASS_SECRET;
   const { data } = await axios.post(`${SERVER_BASE}/api/transcribe`, wavBuffer, {
-    headers: { 'Content-Type': 'audio/wav' },
+    headers: {
+      'Content-Type': 'audio/wav',
+      ...(bypassSecret ? { 'x-vercel-protection-bypass': bypassSecret } : {})
+    },
     timeout: 20000,
     maxBodyLength: 20 * 1024 * 1024
   });
@@ -584,21 +600,27 @@ async function recentTopicsFlow(call, page) {
 // בממשק הניהול של ימות). ensureRecordingFolder דואגת שהיא תיווצר אוטומטית
 // כ-type=playfile (השלוחה שמיועדת להחזיק קבצים להשמעה/הקלטה) אם עוד אינה
 // קיימת - ר' תיעוד UpdateExtension למעלה: "במידה והשלוחה לא קיימת, תיווצר".
-// הערה קריטית: path כאן הוא בפורמט היחסי של yemot-router2 (record read-type,
-// למשל '8/') ולא בפורמט ivr2: של Management API - אלו שני מרחבי-שמות שונים
+// הערה קריטית: path כאן הוא בפורמט היחסי של yemot-router2 (record read-type)
+// ולא בפורמט ivr2: של Management API - אלו שני מרחבי-שמות שונים
 // (ר' downloadRecording, ששם כן צריך את הפורמט ivr2:/...).
-const VOICE_SEARCH_EXTENSION_NUMBER = '8'; // מספר תת-שלוחה קבוע תחת השלוחה הראשית
+//
+// לפי בקשה מפורשת: התיקייה לשמירת הקלטות היא תיקייה עם שם אנגלי (לא מספר
+// שלוחה) ישירות תחת השלוחה הראשית - בדומה לדפוס '/ApiRecords' שאומת בפרויקט
+// ייחוס אחר (path טקסטואלי עם '/' מוביל, המועבר ישירות לפרמטר path של
+// call.read(..., 'record', ...) ולפרמטר path של Management API עם prefix
+// 'ivr2:'). זה מחליף את תת-השלוחה הממוספרת '8' שהייתה בשימוש קודם.
+const VOICE_SEARCH_RECORDINGS_DIR = 'VoiceSearchRecordings'; // שם תיקייה באנגלית תחת השלוחה הראשית
 // הערה קריטית שאומתה בפועל מלוג ימות אמיתי: ימות עצמה מצרפת '/' + file_name
-// ל-path בעת השמירה. path עם '/' בסוף (כפי שהיה כאן קודם) גרם לנתיב כפול
-// "8//query.wav" בפועל (val_2 שהוחזר מהשרת) - ולכן path חייב להיות בלי '/' בסוף.
-const VOICE_SEARCH_RECORD_PATH = VOICE_SEARCH_EXTENSION_NUMBER; // פורמט yemot-router2, בלי '/' בסוף
-const VOICE_SEARCH_MGMT_PATH = `ivr2:/${VOICE_SEARCH_EXTENSION_NUMBER}`; // פורמט Management API
+// ל-path בעת השמירה. path עם '/' בסוף גורם לנתיב כפול (למשל "...//query.wav")
+// - ולכן path חייב להיות בלי '/' בסוף.
+const VOICE_SEARCH_RECORD_PATH = VOICE_SEARCH_RECORDINGS_DIR; // פורמט yemot-router2, בלי '/' בסוף
+const VOICE_SEARCH_MGMT_PATH = `ivr2:/${VOICE_SEARCH_RECORDINGS_DIR}`; // פורמט Management API
 const VOICE_SEARCH_RECORD_FILENAME = 'query'; // ללא סיומת, ר' תיעוד file_name ב-index.d.ts
 
 let recordingFolderEnsured = false;
 
-/** מוודאת שתת-השלוחה הייעודית לשמירת הקלטות החיפוש קיימת במערכת ימות, ואם לא -
- *  יוצרת אותה כ-type=playfile (התתי-שלוחה המיועדת להחזיק קבצים). רצה פעם אחת
+/** מוודאת שהתיקייה הייעודית לשמירת הקלטות החיפוש קיימת במערכת ימות, ואם לא -
+ *  יוצרת אותה כ-type=playfile (התיקייה המיועדת להחזיק קבצים). רצה פעם אחת
  *  בלבד לכל cold start (תהליך Vercel), לא בכל שיחה - כדי לא להעמיס בקריאות API
  *  מיותרות. משתמשת בטוקן ניהול נפרד (YEMOT_MANAGEMENT_TOKEN), לא בפרטי הפורום. */
 async function ensureRecordingFolder() {

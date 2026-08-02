@@ -1,11 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
-    "index.js": {
+    "api/yemot/index.js": {
       "maxDuration": 25
     }
-  },
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/index.js" }
-  ]
+  }
 }

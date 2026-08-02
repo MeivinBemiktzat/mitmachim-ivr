@@ -385,7 +385,10 @@ async function fetchTopic(tid, slug, page = 1) {
  * *לא* מחזירה את בייטי האודיו ל-webhook שלנו - value שמוחזר הוא רק מספר/
  * מזהה קובץ. קובץ ה-wav עצמו נשמר בשרתי ימות בנתיב שהוגדר (path/file_name),
  * ויש להוריד אותו בנפרד דרך Management API של ימות (טוקן נפרד, לא קשור
- * לפרטי ההתחברות של הפורום). ר' גם .env.example (YEMOT_MANAGEMENT_TOKEN).
+ * לפרטי ההתחברות של הפורום). ר' גם .env.example (FREEIVR_MANAGEMENT_TOKEN).
+ * שימו לב: זהו טוקן ניהול *נפרד* מ-YEMOT_MANAGEMENT_TOKEN המשמש את גרסת
+ * מתמחים טופ (api/yemot/index.js) - למערכת ימות המשיח של פורום freeivr יש
+ * טוקן ניהול משלה, שונה מזה של מערכת מתמחים טופ.
  */
 
 /** מוריד את קובץ ה-wav שנשמר בתת-שלוחת ההקלטה (path בפורמט ivr2:/... של
@@ -395,9 +398,9 @@ async function fetchTopic(tid, slug, page = 1) {
  *  לכן שגיאת 404 כאן פירושה כמעט תמיד שהנתיב/שם הקובץ לא תואם למה שימות
  *  שמרה בפועל (ולא בעיית רשת/הרשאות). */
 async function downloadRecording(recordingPath) {
-  const token = process.env.YEMOT_MANAGEMENT_TOKEN;
+  const token = process.env.FREEIVR_MANAGEMENT_TOKEN;
   if (!token) {
-    throw new Error('YEMOT_MANAGEMENT_TOKEN לא מוגדר בסביבה - לא ניתן להוריד הקלטות');
+    throw new Error('FREEIVR_MANAGEMENT_TOKEN לא מוגדר בסביבה - לא ניתן להוריד הקלטות');
   }
   try {
     const { data } = await axios.get(`${YEMOT_MANAGEMENT_BASE}/DownloadFile`, {
@@ -791,8 +794,10 @@ async function notificationsFlow(call) {
 // הערה קריטית נוספת (freeivr): מספר תת-השלוחה כאן (9) שונה בכוונה ממספר
 // תת-השלוחה שנבחר בגרסת מתמחים טופ (8, ר' api/yemot/index.js) - כדי שאם שתי
 // מערכות ה-IVR (מתמחים טופ ו-freeivr) מוגדרות תחת אותה מערכת ימות המשיח
-// פיזית (אותו טוקן ניהול/YEMOT_MANAGEMENT_TOKEN), לא תיווצר התנגשות בנתיב
-// שמירת קבצי ההקלטה של החיפוש הקולי בין שתי המערכות.
+// פיזית, לא תיווצר התנגשות בנתיב שמירת קבצי ההקלטה של החיפוש הקולי בין שתי
+// המערכות. (בפועל, כל מערכת פועלת מול טוקן ניהול נפרד משלה - ר'
+// YEMOT_MANAGEMENT_TOKEN מול FREEIVR_MANAGEMENT_TOKEN - אך ההפרדה בין
+// מספרי תתי-השלוחות נשמרת כשכבת הגנה נוספת ליתר ביטחון.)
 const VOICE_SEARCH_EXTENSION_NUMBER = '9'; // מספר תת-שלוחה קבוע תחת השלוחה הראשית
 const VOICE_SEARCH_EXTENSION_TITLE = 'FreeivrVoiceSearchRecordings'; // שם תיאורי באנגלית - מוצג בממשק הניהול של ימות בלבד, לא חלק מהנתיב
 // הערה קריטית שאומתה בפועל מלוג ימות אמיתי: ימות עצמה מצרפת '/' + file_name
@@ -807,12 +812,12 @@ let recordingFolderEnsured = false;
 /** מוודאת שהתיקייה הייעודית לשמירת הקלטות החיפוש קיימת במערכת ימות, ואם לא -
  *  יוצרת אותה כ-type=playfile (התיקייה המיועדת להחזיק קבצים). רצה פעם אחת
  *  בלבד לכל cold start (תהליך Vercel), לא בכל שיחה - כדי לא להעמיס בקריאות API
- *  מיותרות. משתמשת בטוקן ניהול נפרד (YEMOT_MANAGEMENT_TOKEN), לא בפרטי הפורום. */
+ *  מיותרות. משתמשת בטוקן ניהול נפרד (FREEIVR_MANAGEMENT_TOKEN), לא בפרטי הפורום. */
 async function ensureRecordingFolder() {
   if (recordingFolderEnsured) return;
-  const token = process.env.YEMOT_MANAGEMENT_TOKEN;
+  const token = process.env.FREEIVR_MANAGEMENT_TOKEN;
   if (!token) {
-    throw new Error('YEMOT_MANAGEMENT_TOKEN לא מוגדר בסביבה - לא ניתן לוודא תיקיית הקלטות');
+    throw new Error('FREEIVR_MANAGEMENT_TOKEN לא מוגדר בסביבה - לא ניתן לוודא תיקיית הקלטות');
   }
 
   const { data: checkData } = await axios.get(`${YEMOT_MANAGEMENT_BASE}/CheckIfFolderExists`, {

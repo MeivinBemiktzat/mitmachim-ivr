@@ -190,14 +190,14 @@ function buildPostMessages(post, index, total) {
 /* ============================================================
  * 4. עזרי ניווט משותפים
  *
- * הערה לגבי מוזיקת רקע: מוזיקת ההמתנה ("צמאה") אינה מנוהלת כאן
- * בקוד. היא מוגדרת ברמת השלוחה בממשק הניהול של ימות המשיח
- * (הגדרת music_on_hold על השלוחה עצמה), כפי שממומש באופן טבעי
- * על ידי מנוע ימות - ולא כפרמטר שנשלח בכל תשובת API. פירוט
- * מלא נמצא בקובץ ההוראות (הוראות-הקמה.md).
+ * הערה קריטית: יש לנו שלוחת API אחת בלבד בימות המשיח.
+ * לכן אסור להשתמש ב-call.go_to_folder('/xxx') לניווט פנימי - זו
+ * פקודה שאומרת לימות "עבור לשלוחה פיזית /xxx" והיא תיכשל עם השגיאה
+ * "השלוחה אינה קיימת" כי שלוחה כזו לא קיימת בממשק הניהול.
+ * כל הניווט חייב לקרות בתוך הקוד עצמו, כקריאות פונקציה רגילות.
  * ============================================================ */
 
-const NAV_HINT = 'הקישו 9 להבא, 7 לקודם, 0 לחזרה, כוכבית לתפריט הראשי, סולמית לדף הבית';
+const NAV_HINT = 'הקישו 9 להבא, 7 לקודם, 0 לחזרה, כוכבית לתפריט הראשי';
 
 function navHintMessage() {
   return { type: 'text', data: NAV_HINT, removeInvalidChars: true };
@@ -212,6 +212,9 @@ const MENU_READ_OPTS = {
   block_asterisk_key: false,
   block_zero_key: false
 };
+
+/** נזרק ע"י מסך פנימי כדי לאותת "חזור לתפריט הראשי" למרכז השיחה (main loop). */
+class GoToMainMenu extends Error {}
 
 /**
  * שמירת מצב משתמש (מיקום אחרון וכו') ב-Vercel Blob, לפי מספר טלפון.
@@ -263,7 +266,7 @@ async function clearLastPosition(phone) {
 }
 
 /* ============================================================
- * 5. הראוטר הראשי - כל זרימת השיחה
+ * 5. הראוטר הראשי - שלוחת API יחידה, כל הניווט קורה בתוך הקוד
  * ============================================================ */
 
 const router = YemotRouter({
@@ -272,84 +275,45 @@ const router = YemotRouter({
   uncaughtErrorHandler: async (call, error) => {
     console.error('שגיאה לא מטופלת בשיחה', call.callId, error);
     try {
-      call.id_list_message([
+      await call.id_list_message([
         { type: 'text', data: 'אירעה תקלה זמנית במערכת. אנא נסו שוב מאוחר יותר', removeInvalidChars: true }
       ]);
     } catch (_) { /* השיחה כבר בתהליך סגירה */ }
   }
 });
 
-/* ---------- תפריט ראשי ---------- */
-
-router.get('/', async (call) => {
-  const choice = await call.read([
-    { type: 'text', data: 'ברוכים הבאים לפורום מתמחים טופ הקולי', removeInvalidChars: true },
-    { type: 'text', data: 'להאזנה לפוסטים אחרונים הקישו 1', removeInvalidChars: true },
-    { type: 'text', data: 'לנושאים אחרונים הקישו 2', removeInvalidChars: true },
-    { type: 'text', data: 'לקטגוריות הקישו 3', removeInvalidChars: true },
-    { type: 'text', data: 'לחיפוש הקישו 4', removeInvalidChars: true },
-    { type: 'text', data: 'לתפריט אישי הקישו 5', removeInvalidChars: true },
-    { type: 'text', data: 'לעזרה הקישו 6', removeInvalidChars: true },
-    { type: 'text', data: 'להגדרות הקישו 8', removeInvalidChars: true },
-    { type: 'text', data: 'לחזרה למיקום האחרון הקישו 0', removeInvalidChars: true }
-  ], 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
-
-  switch (choice) {
-    case '1': return call.go_to_folder('/recent');
-    case '2': return call.go_to_folder('/topics');
-    case '3': return call.go_to_folder('/categories');
-    case '4': return call.go_to_folder('/search');
-    case '5': return call.go_to_folder('/personal');
-    case '6': return call.go_to_folder('/help');
-    case '8': return call.go_to_folder('/settings');
-    case '9': return call.go_to_folder('/admin');
-    case '0': return call.go_to_folder('/resume');
-    default: return call.restart_ext();
-  }
-});
-
-/* ---------- פוסטים אחרונים / נושאים אחרונים ---------- */
+/* ---------- פוסטים/נושאים אחרונים ---------- */
 
 async function recentFlow(call, page) {
   let data;
   try {
     data = await fetchRecentTopics(page);
   } catch (err) {
+    console.error('[recentFlow] שגיאת שליפה', err.message);
     return call.id_list_message([
       { type: 'text', data: 'לא ניתן לטעון כרגע פוסטים אחרונים, אנא נסו שוב', removeInvalidChars: true }
-    ]);
+    ], { prependToNextAction: true });
   }
 
   const topics = data.topics || [];
   if (topics.length === 0) {
     return call.id_list_message([
       { type: 'text', data: 'לא נמצאו פוסטים בעת הזו', removeInvalidChars: true }
-    ]);
+    ], { prependToNextAction: true });
   }
 
   await browseTopicList(call, topics, {
-    onOpen: (t) => call.go_to_folder(`/topic?tid=${t.tid}&slug=${encodeURIComponent(t.slug || '')}&page=1&idx=0`),
+    onOpen: (t) => topicFlow(call, t.tid, t.slug || '', 1, 0),
     onNextPage: () => recentFlow(call, page + 1),
     onPrevPage: page > 1 ? () => recentFlow(call, page - 1) : null,
     context: `recent:${page}`
   });
 }
 
-router.get('/recent', async (call) => {
-  const page = parseInt(call.values.page, 10) || 1;
-  await recentFlow(call, page);
-});
-
-router.get('/topics', async (call) => {
-  // "נושאים אחרונים" מיושם כאותה זרימה של הפוסטים האחרונים (NodeBB /recent
-  // מחזיר נושאים ממוינים לפי פעילות אחרונה, וזו למעשה גם רשימת הנושאים האחרונים)
-  const page = parseInt(call.values.page, 10) || 1;
-  await recentFlow(call, page);
-});
-
 /**
  * זרימת עיון גנרית ברשימת נושאים: מקריאה כותרת+מטא לכל נושא ברשימה,
- * ומאפשרת ניווט 9/7/0/#/* ובחירת נושא לפי מספרו הסידורי ברשימה.
+ * ומאפשרת ניווט 9/7/0/* ובחירת נושא לפי מספרו הסידורי ברשימה.
+ * חוזרת (return) כשהמסך הזה סיים - לא קופצת החוצה עם go_to_folder.
  */
 async function browseTopicList(call, topics, { onOpen, onNextPage, onPrevPage, context }) {
   let i = 0;
@@ -370,14 +334,10 @@ async function browseTopicList(call, topics, { onOpen, onNextPage, onPrevPage, c
     }
     if (key === '9') { i++; continue; }
     if (key === '7') { i = Math.max(0, i - 1); continue; }
-    if (key === '0') return call.go_to_folder('/');
-    if (key === '*') return call.go_to_folder('/');
-    if (key === '#') return call.go_to_folder('/');
-    // לא הוקשה תשובה תקינה בזמן - ממשיכים לפריט הבא כברירת מחדל
+    if (key === '0' || key === '*') throw new GoToMainMenu();
     i++;
   }
 
-  // הגענו לסוף הרשימה בעמוד הנוכחי
   const nextKey = await call.read([
     { type: 'text', data: 'הגעתם לסוף הרשימה בעמוד הנוכחי', removeInvalidChars: true },
     { type: 'text', data: onNextPage ? 'לעמוד הבא הקישו 9' : '', removeInvalidChars: true },
@@ -387,26 +347,27 @@ async function browseTopicList(call, topics, { onOpen, onNextPage, onPrevPage, c
 
   if (nextKey === '9' && onNextPage) return onNextPage();
   if (nextKey === '7' && onPrevPage) return onPrevPage();
-  return call.go_to_folder('/');
+  throw new GoToMainMenu();
 }
 
 /* ---------- קטגוריות ---------- */
 
-router.get('/categories', async (call) => {
+async function categoriesFlow(call) {
   let data;
   try {
     data = await fetchCategories();
   } catch (err) {
+    console.error('[categoriesFlow] שגיאת שליפה', err.message);
     return call.id_list_message([
       { type: 'text', data: 'לא ניתן לטעון כרגע את רשימת הקטגוריות, אנא נסו שוב', removeInvalidChars: true }
-    ]);
+    ], { prependToNextAction: true });
   }
 
   const categories = (data.categories || []).filter((c) => !c.disabled);
   if (categories.length === 0) {
     return call.id_list_message([
       { type: 'text', data: 'לא נמצאו קטגוריות', removeInvalidChars: true }
-    ]);
+    ], { prependToNextAction: true });
   }
 
   let i = 0;
@@ -420,70 +381,64 @@ router.get('/categories', async (call) => {
     ], 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
 
     if (key === '1') {
-      return call.go_to_folder(`/category?cid=${cat.cid}&slug=${encodeURIComponent(cat.slug || '')}&page=1`);
+      return categoryFlow(call, cat.cid, cat.slug || '', 1);
     }
     if (key === '9') { i++; continue; }
     if (key === '7') { i = Math.max(0, i - 1); continue; }
-    if (key === '0' || key === '*') return call.go_to_folder('/');
-    if (key === '#') return call.go_to_folder('/');
+    if (key === '0' || key === '*') throw new GoToMainMenu();
     i++;
   }
 
-  return call.go_to_folder('/');
-});
+  throw new GoToMainMenu();
+}
 
 /** האזנה לכל האשכולות בקטגוריה נתונה. */
-router.get('/category', async (call) => {
-  const cid = call.values.cid;
-  const slugParam = call.values.slug || '';
-  const page = parseInt(call.values.page, 10) || 1;
-
+async function categoryFlow(call, cid, slugParam, page) {
   let data;
   try {
     data = await fetchCategoryTopics(cid, slugParam, page);
   } catch (err) {
+    console.error('[categoryFlow] שגיאת שליפה', err.message);
     return call.id_list_message([
       { type: 'text', data: 'לא ניתן לטעון כרגע את תוכן הקטגוריה, אנא נסו שוב', removeInvalidChars: true }
-    ]);
+    ], { prependToNextAction: true });
   }
 
   const topics = data.topics || [];
   if (topics.length === 0) {
     return call.id_list_message([
       { type: 'text', data: 'אין אשכולות בקטגוריה זו כרגע', removeInvalidChars: true }
-    ]);
+    ], { prependToNextAction: true });
   }
 
   await browseTopicList(call, topics, {
-    onOpen: (t) => call.go_to_folder(`/topic?tid=${t.tid}&slug=${encodeURIComponent(t.slug || '')}&page=1&idx=0`),
-    onNextPage: () => call.go_to_folder(`/category?cid=${cid}&slug=${encodeURIComponent(slugParam)}&page=${page + 1}`),
-    onPrevPage: page > 1 ? () => call.go_to_folder(`/category?cid=${cid}&slug=${encodeURIComponent(slugParam)}&page=${page - 1}`) : null,
+    onOpen: (t) => topicFlow(call, t.tid, t.slug || '', 1, 0),
+    onNextPage: () => categoryFlow(call, cid, slugParam, page + 1),
+    onPrevPage: page > 1 ? () => categoryFlow(call, cid, slugParam, page - 1) : null,
     context: `category:${cid}:${page}`
   });
-});
+}
 
 /* ---------- אשכול: האזנה לכל ההודעות, מעבר בין הודעה להודעה, דילוג ---------- */
 
-router.get('/topic', async (call) => {
-  const tid = call.values.tid;
-  const slugParam = call.values.slug || '';
-  const page = parseInt(call.values.page, 10) || 1;
-  let idx = parseInt(call.values.idx, 10) || 0;
+async function topicFlow(call, tid, slugParam, page, startIdx) {
+  let idx = startIdx || 0;
 
   let data;
   try {
     data = await fetchTopic(tid, slugParam, page);
   } catch (err) {
+    console.error('[topicFlow] שגיאת שליפה', err.message);
     return call.id_list_message([
       { type: 'text', data: 'לא ניתן לטעון כרגע את האשכול, אנא נסו שוב', removeInvalidChars: true }
-    ]);
+    ], { prependToNextAction: true });
   }
 
   const posts = data.posts || [];
   if (posts.length === 0) {
     return call.id_list_message([
       { type: 'text', data: 'לא נמצאו הודעות באשכול זה', removeInvalidChars: true }
-    ]);
+    ], { prependToNextAction: true });
   }
 
   const pageCount = data.pagination?.pageCount || 1;
@@ -500,23 +455,21 @@ router.get('/topic', async (call) => {
 
     if (key === '9' || key === '') {
       if (idx + 1 < posts.length) { idx++; continue; }
-      // סוף עמוד ההודעות - האם יש עמוד נוסף באשכול?
-      if (page < pageCount) return call.go_to_folder(`/topic?tid=${tid}&slug=${encodeURIComponent(slugParam)}&page=${page + 1}&idx=0`);
+      if (page < pageCount) return topicFlow(call, tid, slugParam, page + 1, 0);
       const endKey = await call.read([
         { type: 'text', data: 'הגעתם לסוף האשכול', removeInvalidChars: true },
-        { type: 'text', data: 'לחזרה לקטגוריה הקישו 0, לתפריט הראשי הקישו כוכבית', removeInvalidChars: true }
+        { type: 'text', data: 'לחזרה לקטגוריות הקישו 0, לתפריט הראשי הקישו כוכבית', removeInvalidChars: true }
       ], 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '0' });
-      if (endKey === '0') return call.go_to_folder('/categories');
-      return call.go_to_folder('/');
+      if (endKey === '0') return categoriesFlow(call);
+      throw new GoToMainMenu();
     }
     if (key === '7') {
       if (idx > 0) { idx--; continue; }
-      if (page > 1) return call.go_to_folder(`/topic?tid=${tid}&slug=${encodeURIComponent(slugParam)}&page=${page - 1}&idx=0`);
+      if (page > 1) return topicFlow(call, tid, slugParam, page - 1, 0);
       continue; // כבר בהודעה הראשונה
     }
-    if (key === '0') return call.go_to_folder('/categories');
-    if (key === '*') return call.go_to_folder('/');
-    if (key === '#') return call.go_to_folder('/');
+    if (key === '0') return categoriesFlow(call);
+    if (key === '*') throw new GoToMainMenu();
 
     // ניווט לפי ספרות: הקשה של מספר עובר ישירות להודעה המבוקשת באשכול הנוכחי
     const target = parseInt(key, 10);
@@ -525,23 +478,23 @@ router.get('/topic', async (call) => {
       continue;
     }
   }
-});
+}
 
 /* ---------- חזרה למיקום האחרון / המשך האזנה ---------- */
 
-router.get('/resume', async (call) => {
+async function resumeFlow(call) {
   const pos = await getLastPosition(call.phone);
   if (!pos || pos.type !== 'topic') {
     return call.id_list_message([
       { type: 'text', data: 'לא נמצא מיקום שמור מהשיחה הנוכחית', removeInvalidChars: true }
     ], { prependToNextAction: true });
   }
-  return call.go_to_folder(`/topic?tid=${pos.tid}&slug=${encodeURIComponent(pos.slug || '')}&page=${pos.page}&idx=${pos.idx}`);
-});
+  return topicFlow(call, pos.tid, pos.slug || '', pos.page || 1, pos.idx || 0);
+}
 
 /* ---------- חיפוש ---------- */
 
-router.get('/search', async (call) => {
+async function searchFlow(call) {
   const term = await call.read([
     { type: 'text', data: 'אנא הקליטו את מילת החיפוש ולאחריה הקישו סולמית', removeInvalidChars: true }
   ], 'stt', { max_digits: '' });
@@ -550,66 +503,65 @@ router.get('/search', async (call) => {
   if (!query) {
     return call.id_list_message([
       { type: 'text', data: 'לא זוהתה מילת חיפוש, נסו שוב מאוחר יותר', removeInvalidChars: true }
-    ]);
+    ], { prependToNextAction: true });
   }
 
   let data;
   try {
     data = await searchForum(query, 1);
   } catch (err) {
+    console.error('[searchFlow] שגיאת שליפה', err.message);
     return call.id_list_message([
       { type: 'text', data: 'שגיאה בביצוע החיפוש, אנא נסו שוב', removeInvalidChars: true }
-    ]);
+    ], { prependToNextAction: true });
   }
 
   const results = data.posts || data.topics || [];
   if (results.length === 0) {
     return call.id_list_message([
       { type: 'text', data: 'לא נמצאו תוצאות התואמות את החיפוש', removeInvalidChars: true }
-    ]);
+    ], { prependToNextAction: true });
   }
 
   const asTopics = results.map((r) => r.topic ? { ...r.topic, tid: r.topic.tid || r.tid } : r);
 
   await browseTopicList(call, asTopics, {
-    onOpen: (t) => call.go_to_folder(`/topic?tid=${t.tid}&slug=${encodeURIComponent(t.slug || '')}&page=1&idx=0`),
+    onOpen: (t) => topicFlow(call, t.tid, t.slug || '', 1, 0),
     onNextPage: null,
     onPrevPage: null,
     context: `search:${query}`
   });
-});
+}
 
 /* ---------- תפריט אישי ---------- */
 
-router.get('/personal', async (call) => {
+async function personalFlow(call) {
   const key = await call.read([
     { type: 'text', data: 'תפריט אישי', removeInvalidChars: true },
     { type: 'text', data: 'להמשך האזנה מהמקום האחרון הקישו 1', removeInvalidChars: true },
     { type: 'text', data: 'לחזרה לתפריט הראשי הקישו 0', removeInvalidChars: true }
   ], 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
 
-  if (key === '1') return call.go_to_folder('/resume');
-  return call.go_to_folder('/');
-});
+  if (key === '1') return resumeFlow(call);
+  throw new GoToMainMenu();
+}
 
 /* ---------- עזרה ---------- */
 
-router.get('/help', async (call) => {
+async function helpFlow(call) {
   await call.id_list_message([
     { type: 'text', data: 'מדריך ניווט מהיר', removeInvalidChars: true },
     { type: 'text', data: 'בכל שלב, הקישו 9 למעבר להודעה או פריט הבא', removeInvalidChars: true },
     { type: 'text', data: 'הקישו 7 לחזרה להודעה או לפריט הקודם', removeInvalidChars: true },
-    { type: 'text', data: 'הקישו 0 לחזרה לתפריט הקודם או לקטגוריה', removeInvalidChars: true },
+    { type: 'text', data: 'הקישו 0 לחזרה לתפריט הקודם או לקטגוריות', removeInvalidChars: true },
     { type: 'text', data: 'הקישו כוכבית בכל עת לחזרה לתפריט הראשי', removeInvalidChars: true },
-    { type: 'text', data: 'הקישו סולמית לחזרה מיידית לדף הבית', removeInvalidChars: true },
     { type: 'text', data: 'בתוך אשכול, ניתן להקיש את מספר ההודעה כדי לדלג ישירות אליה', removeInvalidChars: true }
   ], { prependToNextAction: true });
-  return call.go_to_folder('/');
-});
+}
 
 /* ---------- הגדרות ---------- */
 
-router.get('/settings', async (call) => {
+async function settingsFlow(call) {
   const key = await call.read([
     { type: 'text', data: 'תפריט הגדרות', removeInvalidChars: true },
     { type: 'text', data: 'לניקוי המטמון והבאת תוכן עדכני הקישו 1', removeInvalidChars: true },
@@ -622,17 +574,16 @@ router.get('/settings', async (call) => {
       { type: 'text', data: 'המטמון נוקה בהצלחה', removeInvalidChars: true }
     ], { prependToNextAction: true });
   }
-  return call.go_to_folder('/');
-});
+}
 
 /* ---------- תפריט מנהל (מוגן בקוד סודי מסביבת ההרצה) ---------- */
 
-router.get('/admin', async (call) => {
+async function adminFlow(call) {
   const adminPin = process.env.ADMIN_PIN;
   if (!adminPin) {
     return call.id_list_message([
       { type: 'text', data: 'תפריט מנהל אינו מוגדר במערכת', removeInvalidChars: true }
-    ]);
+    ], { prependToNextAction: true });
   }
 
   const pin = await call.read([
@@ -642,7 +593,7 @@ router.get('/admin', async (call) => {
   if (pin !== adminPin) {
     return call.id_list_message([
       { type: 'text', data: 'קוד שגוי', removeInvalidChars: true }
-    ]);
+    ], { prependToNextAction: true });
   }
 
   const key = await call.read([
@@ -658,7 +609,48 @@ router.get('/admin', async (call) => {
       { type: 'text', data: 'המטמון נוקה', removeInvalidChars: true }
     ], { prependToNextAction: true });
   }
-  return call.go_to_folder('/');
+}
+
+/* ---------- תפריט ראשי - נקודת הכניסה היחידה, לולאה פנימית שלא יוצאת לשלוחות אחרות ---------- */
+
+router.get('/', async (call) => {
+  console.log(`[MAIN] שיחה חדשה/פעילה מ-${call.phone}, callId=${call.callId}`);
+
+  // לולאה אינסופית: כל בחירה בתפריט מפעילה פונקציה פנימית; GoToMainMenu מחזיר לכאן.
+  // אין ולו קריאה אחת ל-call.go_to_folder בקוד הזה - הניווט כולו פנימי.
+  for (;;) {
+    try {
+      const choice = await call.read([
+        { type: 'text', data: 'ברוכים הבאים לפורום מתמחים טופ הקולי', removeInvalidChars: true },
+        { type: 'text', data: 'להאזנה לפוסטים אחרונים הקישו 1', removeInvalidChars: true },
+        { type: 'text', data: 'לנושאים אחרונים הקישו 2', removeInvalidChars: true },
+        { type: 'text', data: 'לקטגוריות הקישו 3', removeInvalidChars: true },
+        { type: 'text', data: 'לחיפוש הקישו 4', removeInvalidChars: true },
+        { type: 'text', data: 'לתפריט אישי הקישו 5', removeInvalidChars: true },
+        { type: 'text', data: 'לעזרה הקישו 6', removeInvalidChars: true },
+        { type: 'text', data: 'להגדרות הקישו 8', removeInvalidChars: true },
+        { type: 'text', data: 'לחזרה למיקום האחרון הקישו 0', removeInvalidChars: true }
+      ], 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
+
+      console.log(`[MAIN] נבחר: ${choice}`);
+
+      switch (choice) {
+        case '1': await recentFlow(call, 1); break;
+        case '2': await recentFlow(call, 1); break;
+        case '3': await categoriesFlow(call); break;
+        case '4': await searchFlow(call); break;
+        case '5': await personalFlow(call); break;
+        case '6': await helpFlow(call); break;
+        case '8': await settingsFlow(call); break;
+        case '9': await adminFlow(call); break;
+        case '0': await resumeFlow(call); break;
+        default: break; // הקשה לא מוכרת - חוזר לתפריט הראשי
+      }
+    } catch (err) {
+      if (err instanceof GoToMainMenu) continue; // מסך פנימי ביקש לחזור לכאן
+      throw err; // שגיאה אמיתית - תעלה ל-uncaughtErrorHandler
+    }
+  }
 });
 
 /* ============================================================

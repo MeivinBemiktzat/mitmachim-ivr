@@ -377,24 +377,50 @@ async function fetchTopic(tid, slug, page = 1) {
  *  ימות, אם הקובץ לא קיים בנתיב המדויק - השרת מחזיר 404 (לא שגיאת JSON) -
  *  לכן שגיאת 404 כאן פירושה כמעט תמיד שהנתיב/שם הקובץ לא תואם למה שימות
  *  שמרה בפועל (ולא בעיית רשת/הרשאות). */
+// מספר ניסיונות חוזרים אם ההורדה נכשלת מיד לאחר ההקלטה, ומרווח ביניהם.
+// הערה: כעת ששם הקובץ ייחודי לכל שיחה (ר' buildVoiceSearchFilename), אין
+// יותר סיכון של קבלת תוכן stale ממטמון - אבל עדיין ייתכן מרוץ תזמון קצר
+// בין רגע סיום השמירה בצד ימות לרגע קריאת ה-DownloadFile שלנו, מיד אחרי
+// שה-call.read מחזיר תוצאה. retry קצר עם המתנה קטנה סוגר את הפער הזה.
+const DOWNLOAD_RECORDING_MAX_ATTEMPTS = 3;
+const DOWNLOAD_RECORDING_RETRY_DELAY_MS = 400;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function downloadRecording(recordingPath) {
   const token = process.env.YEMOT_MANAGEMENT_TOKEN;
   if (!token) {
     throw new Error('YEMOT_MANAGEMENT_TOKEN לא מוגדר בסביבה - לא ניתן להוריד הקלטות');
   }
-  try {
-    const { data } = await axios.get(`${YEMOT_MANAGEMENT_BASE}/DownloadFile`, {
-      params: { token, path: recordingPath },
-      responseType: 'arraybuffer',
-      timeout: 15000
-    });
-    return Buffer.from(data);
-  } catch (err) {
-    if (err.response?.status === 404) {
-      throw new Error(`קובץ ההקלטה לא נמצא בנתיב ${recordingPath} - יתכן שההקלטה לא נשמרה או ששם הקובץ שונה`);
+  let lastErr;
+  for (let attempt = 1; attempt <= DOWNLOAD_RECORDING_MAX_ATTEMPTS; attempt++) {
+    try {
+      const { data } = await axios.get(`${YEMOT_MANAGEMENT_BASE}/DownloadFile`, {
+        params: { token, path: recordingPath },
+        responseType: 'arraybuffer',
+        timeout: 15000,
+        // מונע מפורשות מטמון בכל שכבה (proxy/CDN) בין אנחנו לימות - עכשיו
+        // שהנתיב ייחודי לכל שיחה זו הגנת-משנה בלבד, אך אין סיבה לא לכלול
+        // אותה: מבטיחה תמיד תוכן טרי לנתיב הספציפי הזה.
+        headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' }
+      });
+      return Buffer.from(data);
+    } catch (err) {
+      lastErr = err;
+      if (err.response?.status === 404 && attempt < DOWNLOAD_RECORDING_MAX_ATTEMPTS) {
+        console.warn(`[downloadRecording] 404 בנתיב ${recordingPath}, ניסיון ${attempt}/${DOWNLOAD_RECORDING_MAX_ATTEMPTS} - ממתין ומנסה שוב (יתכן מרוץ תזמון בשמירת הקובץ)`);
+        await sleep(DOWNLOAD_RECORDING_RETRY_DELAY_MS);
+        continue;
+      }
+      break;
     }
-    throw err;
   }
+  if (lastErr?.response?.status === 404) {
+    throw new Error(`קובץ ההקלטה לא נמצא בנתיב ${recordingPath} לאחר ${DOWNLOAD_RECORDING_MAX_ATTEMPTS} ניסיונות - יתכן שההקלטה לא נשמרה או ששם הקובץ שונה`);
+  }
+  throw lastErr;
 }
 
 /** שולח את בייטי ה-wav לפונקציית התמלול (Python, api/transcribe.py) ומחזיר
@@ -778,7 +804,19 @@ const VOICE_SEARCH_EXTENSION_TITLE = 'VoiceSearchRecordings'; // שם תיאור
 // - ולכן path חייב להיות בלי '/' בסוף.
 const VOICE_SEARCH_RECORD_PATH = VOICE_SEARCH_EXTENSION_NUMBER; // פורמט yemot-router2, בלי '/' בסוף
 const VOICE_SEARCH_MGMT_PATH = `ivr2:/${VOICE_SEARCH_EXTENSION_NUMBER}`; // פורמט Management API
-const VOICE_SEARCH_RECORD_FILENAME = 'query'; // ללא סיומת, ר' תיעוד file_name ב-index.d.ts
+// הערה קריטית (תוקן): בעבר נעשה שימוש בשם קובץ קבוע ('query') לכל ההקלטות.
+// בפועל זו הייתה סיבת השורש לתסמין שדווח בפועל: "החיפוש תמיד מוצא את
+// החיפוש הקודם" - מכיוון שהנתיב זהה בכל שיחה, הורדת הקובץ (DownloadFile)
+// יכולה להחזיר תוכן שמור-במטמון (stale) מקריאה קודמת לאותו נתיב, במקום
+// ההקלטה החדשה שזה עתה נשמרה שם. הפתרון: כל שיחה מקבלת שם קובץ ייחודי
+// משלה, מבוסס על callId (מזהה שיחה ייחודי שסופק ע"י yemot-router2, ר'
+// call.callId) - כך שאין שני שיחות שיכולות אי-פעם לחלוק אותו נתיב, ולכן
+// אין אפשרות תיאורטית למטמון stale להחזיר תשובה שגויה.
+function buildVoiceSearchFilename(call) {
+  const rawCallId = (call && call.callId) ? String(call.callId) : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const safeId = rawCallId.replace(/[^a-zA-Z0-9_-]/g, '');
+  return `query_${safeId}`;
+}
 
 let recordingFolderEnsured = false;
 
@@ -847,14 +885,19 @@ async function voiceSearchFlow(call) {
 
   // שלב 1: הקלטת השאילתה. no_confirm_menu=true מדלג על "לאישור הקישו 2" -
   // המאזין פשוט מקליט ומקיש # ועוברים ישר לתמלול, לחוויה זורמת יותר בחיפוש.
-  // append_to_existing_file=false (ברירת מחדל) - כל הקלטה חדשה דורסת את
-  // הקודמת באותו שם קובץ, כך שאנחנו תמיד יודעים בוודאות את נתיב ההורדה.
+  //
+  // הערה קריטית (תוקן): בעבר נעשה שימוש בשם קובץ קבוע לכל השיחות ('query'),
+  // מה שגרם בפועל לתסמין "החיפוש תמיד מוצא את החיפוש הקודם" - הורדת קובץ
+  // בנתיב קבוע יכולה להחזיר תוכן stale ממטמון במקום ההקלטה החדשה (ר' תיעוד
+  // מפורט ליד buildVoiceSearchFilename למעלה). כעת כל שיחה מקבלת שם קובץ
+  // ייחודי (voiceSearchFilename), כך שאין אפשרות לקונפליקט בין שיחות/מטמון.
+  const voiceSearchFilename = buildVoiceSearchFilename(call);
   const recordResult = await call.read([
     { type: 'text', data: 'חיפוש קולי בפורום', removeInvalidChars: true },
     { type: 'text', data: 'אנא אמרו את מה שתרצו לחפש לאחר הצליל, ובסיום הקישו סולמית', removeInvalidChars: true }
   ], 'record', {
     path: VOICE_SEARCH_RECORD_PATH,
-    file_name: VOICE_SEARCH_RECORD_FILENAME,
+    file_name: voiceSearchFilename,
     no_confirm_menu: true,
     append_to_existing_file: false,
     min_length: 1,

@@ -1,14 +1,21 @@
 {
-  "name": "mitmachim-top-ivr-gateway",
-  "version": "2.5.0",
-  "description": "Advanced Telephone IVR Gateway for Mitmachim Top Forum",
-  "main": "api/index.js",
+  "name": "mitmachim-ivr",
+  "version": "1.0.0",
+  "description": "מערכת IVR לפורום מתמחים טופ, עבור ימות המשיח - מבוססת yemot-router2",
+  "main": "index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.x"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
   "dependencies": {
     "express": "^4.19.2",
-    "node-fetch": "^3.3.2"
+    "yemot-router2": "^6.2.1",
+    "node-cache": "^5.1.2",
+    "axios": "^1.7.7"
   },
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "private": true
+  "license": "MIT"
 }

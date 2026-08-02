@@ -328,44 +328,36 @@ async function downloadRecording(recordingPath) {
     throw new Error('YEMOT_MANAGEMENT_TOKEN לא מוגדר בסביבה');
   }
 
-  const pathsToTry = [
-    recordingPath,
-    recordingPath.replace('//', '/'),
-    recordingPath.replace('ivr2:/', 'ivr2://')
-  ];
+  // val_2 מימות הוא הנתיב הפנימי, למשל:
+  // 8/query.wav
+  //
+  // DownloadFile של Management API צריך:
+  // ivr2:/8/query.wav
+  const normalizedPath = String(recordingPath || '')
+    .trim()
+    .replace(/^ivr2:\/*/, '');
 
-  let lastError;
-
-  for (const path of pathsToTry) {
-    try {
-      console.log('[downloadRecording] מנסה נתיב:', path);
-
-      const { data } = await axios.get(
-        `${YEMOT_MANAGEMENT_BASE}/DownloadFile`,
-        {
-          params: {
-            token,
-            path
-          },
-          responseType: 'arraybuffer',
-          timeout: 15000
-        }
-      );
-
-      return Buffer.from(data);
-
-    } catch (err) {
-      lastError = err;
-
-      console.log(
-        '[downloadRecording] נכשל:',
-        path,
-        err.response?.status || err.message
-      );
-    }
+  if (!normalizedPath) {
+    throw new Error('נתיב הקלטה ריק');
   }
 
-  throw lastError;
+  const path = `ivr2:/${normalizedPath}`;
+
+  console.log('[downloadRecording] נתיב סופי:', path);
+
+  const { data } = await axios.get(
+    `${YEMOT_MANAGEMENT_BASE}/DownloadFile`,
+    {
+      params: {
+        token,
+        path
+      },
+      responseType: 'arraybuffer',
+      timeout: 15000
+    }
+  );
+
+  return Buffer.from(data);
 }
 
 /** שולח את בייטי ה-wav לפונקציית התמלול (Python, api/transcribe.py) ומחזיר

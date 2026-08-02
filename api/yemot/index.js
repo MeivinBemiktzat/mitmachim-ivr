@@ -97,7 +97,7 @@ async function fetchRecentTopics(page = 1) {
   });
 }
 
-/** רשימת כל הקטגוריות הראשיות בפורום. */
+/** רשימת כל הקטגוריות בפורום, כולל תתי-קטגוריות (NodeBB מחזיר עץ עם children). */
 async function fetchCategories() {
   return cached('categories', CACHE_TTL.categories, async () => {
     const { data } = await http.get('/api/categories');
@@ -105,19 +105,37 @@ async function fetchCategories() {
   });
 }
 
-/** נושאים (אשכולות) בתוך קטגוריה מסוימת, לפי cid ו-slug. */
+/** משטח עץ קטגוריות (עם children מקוננים) לרשימה שטוחה אחת, לשימוש בתפריט הקולי.
+ *  כל קטגוריה מקבלת prefix חזותי לפי עומק ה-nesting שלה (למשל "  ↳ ") כדי
+ *  שיהיה ברור בהקראה שמדובר בתת-קטגוריה. */
+function flattenCategoryTree(categories, depth = 0) {
+  const out = [];
+  for (const cat of categories || []) {
+    if (cat.disabled) continue;
+    out.push({ ...cat, _depth: depth });
+    if (Array.isArray(cat.children) && cat.children.length > 0) {
+      out.push(...flattenCategoryTree(cat.children, depth + 1));
+    }
+  }
+  return out;
+}
+
+/** נושאים (אשכולות) בתוך קטגוריה מסוימת. הערה קריטית: ב-NodeBB שדה slug של קטגוריה
+ *  מגיע כבר בפורמט המלא "cid/טקסט-סלאג" (למשל "25/sub1") - אסור להוסיף cid בנפרד
+ *  לפני ה-slug, אחרת מתקבל נתיב כפול ו-404 (בדיוק מה שקרה קודם). */
 async function fetchCategoryTopics(cid, slug, page = 1) {
-  return cached(`cat:${cid}:${page}`, CACHE_TTL.category, async () => {
-    const path = slug ? `/api/category/${cid}/${slug}` : `/api/category/${cid}`;
+  return cached(`cat:${slug || cid}:${page}`, CACHE_TTL.category, async () => {
+    const path = slug ? `/api/category/${slug}` : `/api/category/${cid}`;
     const { data } = await http.get(path, { params: { page } });
     return data;
   });
 }
 
-/** תוכן אשכול (topic) שלם, כולל כל ההודעות (posts), לפי tid ו-slug. */
+/** תוכן אשכול (topic) שלם, כולל כל ההודעות (posts). הערה: ב-NodeBB slug של נושא
+ *  מגיע כבר בפורמט המלא "tid/טקסט-סלאג" - לא להוסיף tid בנפרד לפני ה-slug. */
 async function fetchTopic(tid, slug, page = 1) {
-  return cached(`topic:${tid}:${page}`, CACHE_TTL.topic, async () => {
-    const path = slug ? `/api/topic/${tid}/${slug}` : `/api/topic/${tid}`;
+  return cached(`topic:${slug || tid}:${page}`, CACHE_TTL.topic, async () => {
+    const path = slug ? `/api/topic/${slug}` : `/api/topic/${tid}`;
     const { data } = await http.get(path, { params: { page } });
     return data;
   });
@@ -172,7 +190,24 @@ function buildTopicHeaderMessages(topic) {
   return messages;
 }
 
-/** בונה מערך messages להקראת תוכן הודעה בודדת בתוך אשכול. */
+/** בונה מערך messages להקראת ה"פוסט האחרון" (teaser) של נושא - זו התגובה/הודעה
+ *  העדכנית ביותר שנכתבה באותו נושא, כולל תוכנה המלא. שונה מ-buildTopicHeaderMessages
+ *  שמקריא רק את כותרת הנושא ומטא-דאטה. */
+function buildTeaserMessages(topic, index, total) {
+  const teaser = topic.teaser || {};
+  const authorName = teaser.user?.displayname || teaser.user?.username || 'אנונימי';
+  const date = new Date(teaser.timestamp || topic.lastposttime || Date.now());
+  const dateStr = `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}/${date.getFullYear()}`;
+  const content = sanitizeForSpeech(teaser.content);
+
+  return [
+    { type: 'text', data: `פריט ${index + 1} מתוך ${total}`, removeInvalidChars: true },
+    { type: 'text', data: `בנושא: ${sanitizeForSpeech(topic.title || 'ללא כותרת')}`, removeInvalidChars: true },
+    { type: 'text', data: `מאת ${sanitizeForSpeech(authorName)}`, removeInvalidChars: true },
+    { type: 'date', data: dateStr },
+    { type: 'text', data: content || 'הודעה ללא תוכן טקסטואלי', removeInvalidChars: true }
+  ];
+}
 function buildPostMessages(post, index, total) {
   const authorName = post.user?.displayname || post.user?.username || 'אנונימי';
   const date = new Date(post.timestamp || Date.now());
@@ -249,7 +284,10 @@ async function getLastPosition(phone) {
     console.log(`[BLOB] נטען מיקום עבור ${phone}:`, data);
     return data;
   } catch (err) {
-    if (err.response?.status !== 404 && err.status !== 404) {
+    const notFound = err.response?.status === 404 || err.status === 404 || /does not exist/i.test(err.message || '');
+    if (notFound) {
+      console.log(`[BLOB] אין מיקום שמור עבור ${phone} (ראשוני/נוקה)`);
+    } else {
       console.error(`[BLOB] כשל בטעינת מיקום עבור ${phone}:`, err.message);
     }
     return null;
@@ -282,14 +320,14 @@ const router = YemotRouter({
   }
 });
 
-/* ---------- פוסטים/נושאים אחרונים ---------- */
+/* ---------- שלוחה 1: פוסטים אחרונים (תוכן ה-teaser - ההודעה האחרונה שנכתבה) ---------- */
 
-async function recentFlow(call, page) {
+async function recentPostsFlow(call, page) {
   let data;
   try {
     data = await fetchRecentTopics(page);
   } catch (err) {
-    console.error('[recentFlow] שגיאת שליפה', err.message);
+    console.error('[recentPostsFlow] שגיאת שליפה', err.message);
     return call.id_list_message([
       { type: 'text', data: 'לא ניתן לטעון כרגע פוסטים אחרונים, אנא נסו שוב', removeInvalidChars: true }
     ], { prependToNextAction: true });
@@ -303,25 +341,58 @@ async function recentFlow(call, page) {
   }
 
   await browseTopicList(call, topics, {
+    buildMessages: (t, i, total) => buildTeaserMessages(t, i, total),
     onOpen: (t) => topicFlow(call, t.tid, t.slug || '', 1, 0),
-    onNextPage: () => recentFlow(call, page + 1),
-    onPrevPage: page > 1 ? () => recentFlow(call, page - 1) : null,
-    context: `recent:${page}`
+    onNextPage: () => recentPostsFlow(call, page + 1),
+    onPrevPage: page > 1 ? () => recentPostsFlow(call, page - 1) : null,
+    context: `recentposts:${page}`
+  });
+}
+
+/* ---------- שלוחה 2: נושאים אחרונים (כותרת + מטא-דאטה של הנושא, לא ה-teaser) ---------- */
+
+async function recentTopicsFlow(call, page) {
+  let data;
+  try {
+    data = await fetchRecentTopics(page);
+  } catch (err) {
+    console.error('[recentTopicsFlow] שגיאת שליפה', err.message);
+    return call.id_list_message([
+      { type: 'text', data: 'לא ניתן לטעון כרגע נושאים אחרונים, אנא נסו שוב', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  const topics = data.topics || [];
+  if (topics.length === 0) {
+    return call.id_list_message([
+      { type: 'text', data: 'לא נמצאו נושאים בעת הזו', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  await browseTopicList(call, topics, {
+    onOpen: (t) => topicFlow(call, t.tid, t.slug || '', 1, 0),
+    onNextPage: () => recentTopicsFlow(call, page + 1),
+    onPrevPage: page > 1 ? () => recentTopicsFlow(call, page - 1) : null,
+    context: `recenttopics:${page}`
   });
 }
 
 /**
- * זרימת עיון גנרית ברשימת נושאים: מקריאה כותרת+מטא לכל נושא ברשימה,
- * ומאפשרת ניווט 9/7/0/* ובחירת נושא לפי מספרו הסידורי ברשימה.
- * חוזרת (return) כשהמסך הזה סיים - לא קופצת החוצה עם go_to_folder.
+ * זרימת עיון גנרית ברשימת נושאים: מקריאה תוכן לכל נושא ברשימה (לפי buildMessages
+ * שהועבר - כותרת+מטא, או תוכן ה-teaser), ומאפשרת ניווט 9/7/0/* ובחירת נושא
+ * לפי מספרו הסידורי ברשימה. חוזרת (return) כשהמסך הזה סיים - לא קופצת עם go_to_folder.
  */
-async function browseTopicList(call, topics, { onOpen, onNextPage, onPrevPage, context }) {
+async function browseTopicList(call, topics, { onOpen, onNextPage, onPrevPage, context, buildMessages }) {
+  const buildFn = buildMessages || ((topic, i, total) => [
+    { type: 'text', data: `פריט ${i + 1} מתוך ${total}`, removeInvalidChars: true },
+    ...buildTopicHeaderMessages(topic)
+  ]);
+
   let i = 0;
   while (i < topics.length) {
     const topic = topics[i];
     const messages = [
-      { type: 'text', data: `פריט ${i + 1} מתוך ${topics.length}`, removeInvalidChars: true },
-      ...buildTopicHeaderMessages(topic),
+      ...buildFn(topic, i, topics.length),
       { type: 'text', data: 'לפתיחה הקישו 1', removeInvalidChars: true },
       navHintMessage()
     ];
@@ -363,7 +434,7 @@ async function categoriesFlow(call) {
     ], { prependToNextAction: true });
   }
 
-  const categories = (data.categories || []).filter((c) => !c.disabled);
+  const categories = flattenCategoryTree(data.categories || []);
   if (categories.length === 0) {
     return call.id_list_message([
       { type: 'text', data: 'לא נמצאו קטגוריות', removeInvalidChars: true }
@@ -373,9 +444,10 @@ async function categoriesFlow(call) {
   let i = 0;
   while (i < categories.length) {
     const cat = categories[i];
+    const depthLabel = cat._depth > 0 ? `תת-קטגוריה ברמה ${cat._depth}: ` : '';
     const key = await call.read([
       { type: 'text', data: `קטגוריה ${i + 1} מתוך ${categories.length}`, removeInvalidChars: true },
-      { type: 'text', data: sanitizeForSpeech(cat.name), removeInvalidChars: true },
+      { type: 'text', data: `${depthLabel}${sanitizeForSpeech(cat.name)}`, removeInvalidChars: true },
       { type: 'text', data: 'לכניסה הקישו 1', removeInvalidChars: true },
       navHintMessage()
     ], 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
@@ -635,8 +707,8 @@ router.get('/', async (call) => {
       console.log(`[MAIN] נבחר: ${choice}`);
 
       switch (choice) {
-        case '1': await recentFlow(call, 1); break;
-        case '2': await recentFlow(call, 1); break;
+        case '1': await recentPostsFlow(call, 1); break;
+        case '2': await recentTopicsFlow(call, 1); break;
         case '3': await categoriesFlow(call); break;
         case '4': await searchFlow(call); break;
         case '5': await personalFlow(call); break;

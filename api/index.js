@@ -1,856 +1,669 @@
-// ============================================================================
-// api/index.js
-// מודול API טלפוני מתקדם עבור פורום מתמחים טופ (NodeBB) — IVR ימות המשיח
-// ============================================================================
-// ארכיטקטורה v7.0 — תיקון יסודי + שכלולים
-// ----------------------------------------------------------------------------
-//
-//  *** הבאג האמיתי שתוקן (מה שכל הכלים פספסו) ***
-//  ימות צוברת בכל בקשה את כל ההקשות מתחילת השיחה:
-//      screen=main&mainsel=1&recentsel=1&recentsel=2&mainsel=2&mainsel=3 ...
-//  כך, גם כשהמשתמש כבר במסך אחר, ההקשות הישנות (recentsel/mainsel)
-//  נשארות "תקועות" בבקשה. הקוד הישן נכנס לכמה בלוקים בו-זמנית
-//  והדריס את ה-state -> "הבחירה שגויה" / לא נכנס לפוסט.
-//
-//  הפתרון:
-//  1. כל בקשה כוללת מונה צעדים ייחודי (step). אנחנו מייצרים שם פרמטר
-//     קלט ייחודי לכל מסך+צעד, כך שהקשה ישנה לעולם לא תזוהה כחדשה.
-//  2. הראוטר מסתמך אך ורק על 'screen' כמקור אמת, ומעבד אך ורק את
-//     פרמטר הקלט של אותו מסך לאותו צעד. כל השאר — מתעלמים.
-//  3. ביטול מוחלט של "לאישור הקישו 1" (פרמטר 15 = no).
-//  4. מבנה api_add_<INDEX>=<KEY>=<VALUE> נכון.
-//
-//  *** שכלולים ***
-//  - הסרה מלאה של פיצ'ר החיפוש (לא היה, ומוודאים שאין).
-//  - מסך "מועדפים זמניים" לשיחה (סימון נושאים).
-//  - ניווט משופר בתוך נושא: הבא/קודם/חזרה/דילוג/קפיצה/פרטים.
-//  - דפדוף עמודים בקטגוריות וברשימות.
-//  - הקראת זמן פרסום, מחבר, מספר תגובות.
-//  - טיפול שגיאות מלא, fallback חכם בכל מסך.
-// ============================================================================
-
-const FORUM_URL       = (process.env.FORUM_URL || 'https://mitmachim.top').replace(/\/+$/, '');
-const MAX_TITLE_CHARS = 300;
-const MAX_BODY_CHARS  = 950;
-const DEFAULT_TIMEOUT = 9000;
-const LIST_SIZE       = 9;
-const NB_PAGE_SIZE    = 20;
-
-// מפריד מזהים בטוח (לא מפריד פרוטוקול, לא מופיע במספרים)
-const ID_SEP = 'x';
-
-// ============================================================================
-// עזרי מזהים ו-state
-// ============================================================================
-
-function splitIds(raw) {
-  if (raw === undefined || raw === null || raw === '') return [];
-  return String(raw)
-    .split(/[x>,]/)
-    .map(s => s.trim())
-    .filter(s => s !== '' && /^\d+$/.test(s));
-}
-
-function joinIds(ids) {
-  if (!ids || !ids.length) return '';
-  return ids.map(x => String(x).trim()).filter(x => x !== '').join(ID_SEP);
-}
-
-function getState(q, key) {
-  const val = q[key];
-  return val === undefined || val === null ? '' : String(val);
-}
-
 /**
- * נירמול ערך שעלול להגיע כמערך — מחזיר את האחרון בפועל.
+ * מערכת IVR - פורום "מתמחים טופ"
+ * ================================
+ * מערכת טלפונית מלאה לגלישה בפורום מתמחים טופ (mitmachim.top - מבוסס NodeBB)
+ * דרך מערכת "ימות המשיח", מבוססת על ספריית yemot-router2 (מודול API הרשמי).
+ *
+ * ארכיטקטורה: קובץ יחיד (index.js) + package.json בלבד.
+ * מיועד לפריסה כ-Serverless Function ב-Vercel.
+ * דומיין: https://mitmachim-ivr.vercel.app
+ *
+ * מבנה הקובץ (מודולרי פנימית, למרות שהוא קובץ אחד):
+ *   1. תשתית: קבועים, cache, HTTP client לפורום
+ *   2. שכבת נתונים: פונקציות שמביאות מידע מ-NodeBB API (עם retry)
+ *   3. שכבת הקראה: המרת תוכן פורום למבני message של ימות (טיפול בתאריכים, מחברים וכו')
+ *   4. שכבת מוזיקת רקע: ניהול music_on_hold ושמירת מיקום השמעה
+ *   5. שכבת ניווט: תפריטים (ראשי, קטגוריות, אשכולות, הודעות, חיפוש, אישי, עזרה, הגדרות, מנהל)
+ *   6. הרכבת הראוטר וייצוא ל-Vercel
  */
-function lastVal(val) {
-  if (Array.isArray(val)) return val.length ? String(val[val.length - 1]) : '';
-  return val === undefined || val === null ? '' : String(val);
-}
 
-function pressed(val) {
-  const v = lastVal(val);
-  return v !== '';
-}
+'use strict';
 
-/**
- * *** ליבת התיקון ***
- * שם פרמטר קלט ייחודי לכל מסך + צעד.
- * כך הקשה ישנה מצעד קודם לעולם לא תזוהה כחדשה,
- * כי שם הפרמטר שלה שונה משם הפרמטר של הצעד הנוכחי.
- */
-function inputKey(screen, step) {
-  return 'k_' + screen + '_' + step;
-}
+const express = require('express');
+const { YemotRouter, ExitError } = require('yemot-router2');
+const NodeCache = require('node-cache');
+const axios = require('axios');
 
-/**
- * קריאת ההקשה של המסך הנוכחי בלבד.
- * אנחנו בונים את שם הפרמטר מתוך screen+step שנשמרו ב-state,
- * וקוראים אך ורק אותו. כל ההקשות הישנות מתעלמים מהן.
- */
-function readInput(q, screen, step) {
-  const key = inputKey(screen, step);
-  return lastVal(q[key]).trim();
-}
+/* ============================================================
+ * 1. תשתית כללית
+ * ============================================================ */
 
-// ============================================================================
-// שכבת תקשורת מול NodeBB Read API
-// ============================================================================
+const FORUM_BASE = 'https://mitmachim.top';
+const SERVER_BASE = 'https://mitmachim-ivr.vercel.app';
 
-async function nbFetch(path) {
-  const url = FORUM_URL + '/api' + path;
-  const controller = new AbortController();
-  const timeoutId  = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT);
+// מטמון בזיכרון - TTL קצר לתוכן דינמי (פוסטים/נושאים), ארוך יותר לקטגוריות
+const cache = new NodeCache({ stdTTL: 90, checkperiod: 30, useClones: false });
+const CACHE_TTL = {
+  recent: 60,       // פוסטים/נושאים אחרונים
+  categories: 600,  // רשימת קטגוריות - משתנה לעיתים רחוקות
+  category: 90,      // נושאים בקטגוריה מסוימת
+  topic: 60          // הודעות באשכול
+};
 
-  try {
-    const res = await fetch(url, {
-      method: 'GET',
-      signal: controller.signal,
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'yemot-nodebb-bridge-ivr/7.0',
-        'Cache-Control': 'no-cache'
-      }
-    });
-    clearTimeout(timeoutId);
-    if (!res.ok) {
-      console.error(`[NodeBB Error] HTTP ${res.status} for path: ${path}`);
-      throw new Error(`NodeBB HTTP ${res.status}`);
-    }
-    const data = await res.json();
-    if (!data) throw new Error('Empty JSON response');
-    return data;
-  } catch (error) {
-    clearTimeout(timeoutId);
-    console.error(`[Fetch Exception] ${url} →`, error.message);
-    throw error;
+// שם קובץ המוזיקה שהוגדר בימות עבור "צמאה" (music_on_hold) - יש להעלות בשם זה בממשק הניהול
+const BACKGROUND_MUSIC_NAME = process.env.YEMOT_MUSIC_NAME || 'tzamea';
+
+// הגדרות HTTP client לפורום - keep-alive + timeout סביר + compression
+const http = axios.create({
+  baseURL: FORUM_BASE,
+  timeout: 8000,
+  headers: {
+    'User-Agent': 'MitmachimIVR/1.0 (+https://mitmachim-ivr.vercel.app)',
+    'Accept-Encoding': 'gzip, deflate, br'
   }
+});
+
+/**
+ * עוטף כל קריאת רשת בניסיון חוזר יחיד לפני כישלון סופי (יציבות מול תקלות זמניות).
+ * @param {Function} fn - פונקציה אסינכרונית לביצוע
+ * @param {number} retries - כמות ניסיונות נוספים
+ */
+async function withRetry(fn, retries = 1) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
+      }
+    }
+  }
+  throw lastErr;
 }
 
-async function fetchTopicPost(tid, postIndex) {
-  const nbPage = Math.floor(postIndex / NB_PAGE_SIZE) + 1;
-  const data  = await nbFetch('/topic/' + tid + '?page=' + nbPage);
-  const posts = data.posts || [];
-  const totalPosts = data.postcount || posts.length;
-  const relativeIndex = postIndex - (nbPage - 1) * NB_PAGE_SIZE;
-  const post = posts[relativeIndex] || null;
-  return { topic: data, post, posts, relativeIndex, totalPosts };
+/** עטיפת cache-aside גנרית: מחזיר מהמטמון אם קיים, אחרת שולף ושומר. */
+async function cached(key, ttl, fetcher) {
+  const hit = cache.get(key);
+  if (hit !== undefined) return hit;
+  const value = await withRetry(fetcher, 1);
+  cache.set(key, value, ttl);
+  return value;
 }
 
-// ============================================================================
-// עיבוד טקסט להקראה (TTS)
-// ============================================================================
+/* ============================================================
+ * 2. שכבת נתונים - NodeBB REST API (mitmachim.top)
+ * NodeBB חושף כל דף כ-JSON על ידי הוספת api/ בתחילת הנתיב.
+ * לדוגמה: mitmachim.top/recent -> mitmachim.top/api/recent
+ * ============================================================ */
 
-function cleanText(html) {
-  if (!html) return '';
-  let text = String(html);
+/** פוסטים/נושאים אחרונים בפורום. */
+async function fetchRecentTopics(page = 1) {
+  return cached(`recent:${page}`, CACHE_TTL.recent, async () => {
+    const { data } = await http.get('/api/recent', { params: { page } });
+    return data;
+  });
+}
 
-  text = text.replace(/<style[\s\S]*?<\/style>/gi, ' ');
-  text = text.replace(/<script[\s\S]*?<\/script>/gi, ' ');
-  text = text.replace(/<blockquote[\s\S]*?<\/blockquote>/gi, ' ציטוט ');
-  text = text.replace(/<code[\s\S]*?<\/code>/gi, ' קטע קוד ');
-  text = text.replace(/<pre[\s\S]*?<\/pre>/gi, ' קטע קוד ');
+/** רשימת כל הקטגוריות הראשיות בפורום. */
+async function fetchCategories() {
+  return cached('categories', CACHE_TTL.categories, async () => {
+    const { data } = await http.get('/api/categories');
+    return data;
+  });
+}
 
-  text = text.replace(/<br\s*\/?>/gi, ' ');
-  text = text.replace(/<\/p>/gi, '. ');
-  text = text.replace(/<\/div>/gi, '. ');
-  text = text.replace(/<\/li>/gi, '. ');
-  text = text.replace(/<\/h[1-6]>/gi, '. ');
+/** נושאים (אשכולות) בתוך קטגוריה מסוימת, לפי cid ו-slug. */
+async function fetchCategoryTopics(cid, slug, page = 1) {
+  return cached(`cat:${cid}:${page}`, CACHE_TTL.category, async () => {
+    const path = slug ? `/api/category/${cid}/${slug}` : `/api/category/${cid}`;
+    const { data } = await http.get(path, { params: { page } });
+    return data;
+  });
+}
 
-  text = text.replace(/<[^>]+>/g, ' ');
+/** תוכן אשכול (topic) שלם, כולל כל ההודעות (posts), לפי tid ו-slug. */
+async function fetchTopic(tid, slug, page = 1) {
+  return cached(`topic:${tid}:${page}`, CACHE_TTL.topic, async () => {
+    const path = slug ? `/api/topic/${tid}/${slug}` : `/api/topic/${tid}`;
+    const { data } = await http.get(path, { params: { page } });
+    return data;
+  });
+}
 
-  text = text.replace(/&nbsp;/gi, ' ');
-  text = text.replace(/&amp;/gi, ' ו ');
-  text = text.replace(/&quot;/gi, ' ');
-  text = text.replace(/&#39;|&apos;/gi, ' ');
-  text = text.replace(/&lt;/gi, ' ').replace(/&gt;/gi, ' ');
-  text = text.replace(/&#x27;/gi, ' ').replace(/&x27;/gi, ' ');
+/** חיפוש חופשי בפורום. */
+async function searchForum(term, page = 1) {
+  return cached(`search:${term}:${page}`, CACHE_TTL.recent, async () => {
+    const { data } = await http.get('/api/search', {
+      params: { term, in: 'titlesposts', page }
+    });
+    return data;
+  });
+}
 
-  text = text.replace(/https?:\/\/\S+/gi, ' קישור ');
+/* ============================================================
+ * 3. שכבת הקראה - הפיכת תוכן טקסטואלי מהפורום למבני message של ימות
+ * ============================================================ */
 
-  // תווים שמשבשים את פרוטוקול ימות
-  text = text.replace(/[._\-+=*#@^~`|<>\\\/\[\]{}]+/g, ' ');
-
-  text = text.replace(/\s+/g, ' ').trim();
+/** מסיר תגי HTML, קישורים גולמיים ותווים בעייתיים מטקסט המיועד להקראה. */
+function sanitizeForSpeech(raw) {
+  if (!raw) return '';
+  let text = String(raw)
+    .replace(/<[^>]*>/g, ' ')                 // הסרת תגי HTML
+    .replace(/https?:\/\/\S+/g, 'קישור')       // החלפת קישורים במילה "קישור"
+    .replace(/@[\w.\-א-ת]+/g, '')             // הסרת תיוגי משתמשים (@שם)
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, 'ו')
+    .replace(/[#*_`~^]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  // הגבלת אורך למניעת הודעות ארוכות מדי (מגבלת מנוע ההקראה של ימות)
+  if (text.length > 1200) text = text.slice(0, 1200) + '... הטקסט המלא ארוך מכדי להיקרא במלואו';
   return text;
 }
 
-function ttsCut(text, max) {
-  const cleaned = cleanText(text);
-  if (cleaned.length <= max) return cleaned;
-  return cleaned.slice(0, max) + ' ';
-}
+/** בונה מערך messages להקראת כותרת פוסט/נושא כולל מטא-דאטה (מחבר, תאריך, תגובות). */
+function buildTopicHeaderMessages(topic) {
+  const authorName = topic.user?.displayname || topic.user?.username || 'אנונימי';
+  const date = new Date(topic.timestamp || topic.lastposttime || Date.now());
+  const dateStr = `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}/${date.getFullYear()}`;
+  const replies = topic.postcount != null ? topic.postcount - 1 : 0;
 
-function timeAgo(ts) {
-  if (!ts) return '';
-  const diff    = Date.now() - Number(ts);
-  const minutes = Math.floor(diff / 60000);
-  if (minutes < 1)  return 'לפני פחות מדקה';
-  if (minutes < 60) return 'לפני ' + minutes + ' דקות';
-  const hours = Math.floor(minutes / 60);
-  if (hours === 1) return 'לפני שעה';
-  if (hours === 2) return 'לפני שעתיים';
-  if (hours < 24)  return 'לפני ' + hours + ' שעות';
-  const days = Math.floor(hours / 24);
-  if (days === 1) return 'אתמול';
-  if (days === 2) return 'לפני יומיים';
-  if (days < 30)  return 'לפני ' + days + ' ימים';
-  const months = Math.floor(days / 30);
-  if (months === 1) return 'לפני חודש';
-  if (months === 2) return 'לפני חודשיים';
-  if (months < 12)  return 'לפני ' + months + ' חודשים';
-  return 'לפני יותר משנה';
-}
-
-// ============================================================================
-// בניית פקודות ימות
-// ============================================================================
-
-function sanitizePart(part) {
-  return String(part)
-    .replace(/[.,\-_=+&*^>]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-/**
- * read מלא (15 פרמטרים). פרמטר 15 = "no" -> ללא "לאישור הקישו 1".
- * שם הפרמטר (paramName) הוא הייחודי-לצעד, כדי למנוע צבירה.
- */
-function buildReadMenu(parts, paramName, opts = {}) {
-  const min       = opts.min ?? 1;
-  const max       = opts.max ?? 1;
-  const waitSec   = opts.waitSec ?? 7;
-  const type      = opts.type || 'Digits';
-  const blockStar = opts.blockStar || 'no';
-  const blockZero = opts.blockZero || 'no';
-
-  const cleanParts = parts
-    .filter(p => p && String(p).trim())
-    .map(p => sanitizePart(p));
-
-  const promptStr = 't-' + cleanParts.join('. ');
-
-  const readParams = [
-    paramName,   // 1 שם משתנה (ייחודי לצעד!)
-    'no',        // 2 שימוש חוזר
-    max,         // 3 מקסימום ספרות
-    min,         // 4 מינימום ספרות
-    waitSec,     // 5 timeout
-    type,        // 6 סוג השמעה
-    blockStar,   // 7 חסימת כוכבית
-    blockZero,   // 8 חסימת אפס
-    '',          // 9 החלפת תו
-    '',          // 10 מקשים מותרים
-    '',          // 11 פעמים ל"ריק"
-    '',          // 12 ריק מותר
-    '',          // 13 טקסט ריק
-    '',          // 14 שינוי מקלדת
-    'no'         // 15 ביטול בקשת אישור
+  const messages = [
+    { type: 'text', data: sanitizeForSpeech(topic.title || topic.titleRaw || 'ללא כותרת'), removeInvalidChars: true }
   ];
-
-  return `read=${promptStr}=${readParams.join(',')}`;
+  messages.push({ type: 'text', data: `מאת ${sanitizeForSpeech(authorName)}`, removeInvalidChars: true });
+  messages.push({ type: 'date', data: dateStr });
+  if (replies > 0) {
+    messages.push({ type: 'text', data: `${replies} תגובות`, removeInvalidChars: true });
+  }
+  return messages;
 }
 
-function buildSilentRead(text, paramName) {
-  const t = sanitizePart(text || 'טוען');
-  const name = paramName || 'dummy';
-  return `read=t-${t}=${name},no,1,1,1,Digits,no,no,,,,,,,no`;
+/** בונה מערך messages להקראת תוכן הודעה בודדת בתוך אשכול. */
+function buildPostMessages(post, index, total) {
+  const authorName = post.user?.displayname || post.user?.username || 'אנונימי';
+  const date = new Date(post.timestamp || Date.now());
+  const dateStr = `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}/${date.getFullYear()}`;
+  const content = sanitizeForSpeech(post.content);
+
+  return [
+    { type: 'text', data: `הודעה ${index + 1} מתוך ${total}`, removeInvalidChars: true },
+    { type: 'text', data: `מאת ${sanitizeForSpeech(authorName)}`, removeInvalidChars: true },
+    { type: 'date', data: dateStr },
+    { type: 'text', data: content || 'הודעה ללא תוכן טקסטואלי', removeInvalidChars: true }
+  ];
 }
 
-// ============================================================================
-// בניית רשימות תוכן
-// ============================================================================
+/* ============================================================
+ * 4. שכבת מוזיקת רקע
+ * ------------------------------------------------------------
+ * ימות המשיח תומכת במוזיקת המתנה על ידי הוספת message מסוג
+ * music_on_hold בתחילת רצף ה-messages המושמע. המוזיקה מתנגנת
+ * "ברקע" בזמן שהמערכת טוענת/מקריאה, ועוצרת אוטומטית כשעוברים ל-read.
+ *
+ * "המשך מהמקום שנעצר" - ימות אינה חושפת API להמשך המוזיקה בדיוק
+ * מהשנייה שבה נעצרה בין שלוחות. הפתרון הקרוב ביותר בתיעוד הרשמי:
+ * לצרף musicName בכל id_list_message/read לאורך כל השיחה (כך שהיא
+ * "לא מתחילה מחדש" כניגון נפרד בכל תפריט אלא ממשיכה ברצף אחד קבוע
+ * לכל אורך השיחה - כפי שממומש בפועל על ידי מנוע ימות), ולא לשלוח
+ * את אותה קריאת music_on_hold פעמיים ברצף לאותה שיחה ללא צורך.
+ * אנו עוקבים per-call אחרי מצב "האם המוזיקה כבר הופעלה" כדי להימנע
+ * מאיפוס מיותר, ומצרפים אותה מחדש בכל מעבר תפריט כנדרש.
+ * ============================================================ */
 
-function buildTopicListParts(topics, headerText, footerText) {
-  const parts = [];
-  if (headerText) parts.push(headerText);
-
-  if (!topics || topics.length === 0) {
-    parts.push('לא נמצאו נושאים להצגה');
-    if (footerText) parts.push(footerText);
-    return parts;
-  }
-
-  topics.forEach((tp, i) => {
-    const num      = i + 1;
-    const title    = ttsCut(tp.title, MAX_TITLE_CHARS);
-    const username = tp.user && tp.user.username ? tp.user.username : 'משתמש';
-    const replies  = tp.postcount ? Math.max(0, tp.postcount - 1) : 0;
-
-    parts.push(`נושא מספר ${num}`);
-    parts.push(title);
-    parts.push(`מאת ${username}`);
-    if (replies === 1)      parts.push('תגובה אחת');
-    else if (replies > 1)   parts.push(`${replies} תגובות`);
-    else                    parts.push('ללא תגובות');
-    parts.push(`להאזנה הקישו ${num}`);
-  });
-
-  if (footerText) parts.push(footerText);
-  return parts;
+function musicMessage() {
+  return { type: 'music_on_hold', data: { musicName: BACKGROUND_MUSIC_NAME } };
 }
 
-function buildCategoryListParts(cats, headerText) {
-  const parts = [];
-  if (headerText) parts.push(headerText);
-
-  if (!cats || cats.length === 0) {
-    parts.push('לא נמצאו קטגוריות זמינות');
-    return parts;
-  }
-
-  cats.forEach((c, i) => {
-    const num  = i + 1;
-    const name = cleanText(c.name);
-    const cnt  = c.topic_count || c.totalTopicCount || 0;
-    parts.push(`קטגוריה מספר ${num}`);
-    parts.push(name);
-    if (cnt > 0) parts.push(`${cnt} נושאים`);
-    parts.push(`לכניסה הקישו ${num}`);
-  });
-
-  return parts;
+/** מוסיף מוזיקת רקע לפני מערך הודעות נתון (למסכי טעינה/הקראה). */
+function withMusic(messages) {
+  return [musicMessage(), ...messages];
 }
 
-// ============================================================================
-// בניית תגובה עם state
-// ============================================================================
+/* ============================================================
+ * 5. עזרי ניווט משותפים
+ * ============================================================ */
 
-function sanitizeStateValue(val) {
-  return String(val).replace(/[=>*&^.,]/g, '');
+const NAV_HINT = 'הקישו 9 להבא, 7 לקודם, 0 לחזרה, כוכבית לתפריט הראשי, סולמית לדף הבית';
+
+function navHintMessage() {
+  return { type: 'text', data: NAV_HINT, removeInvalidChars: true };
 }
 
-/**
- * api_add_<INDEX>=<KEY>=<VALUE> ברצף החל מ-0.
- */
-function buildResponse(readCmd, stateParams = {}) {
-  // הסרת רווחים או תווים נסתרים שאולי נגררו בסוף פקודת ה-read
-  let out = readCmd.trim(); 
-  let index = 0;
-  for (const key in stateParams) {
-    let val = stateParams[key];
-    if (val === undefined || val === null) continue;
-    val = sanitizeStateValue(val);
-    // שימוש ב- \n נקי בלבד וללא רווחים לפני או אחרי ה- api_add
-    out += `\napi_add_${index}=${key}=${val}`; 
-    index++;
-  }
-  console.log(`[v0] buildResponse: ${out.replace(/\n/g, ' [NL] ').substring(0, 260)}`);
-  return out;
-}
-
-/**
- * מעבר "שקט" — שומר state ומשתמש בפרמטר ייחודי כדי לא לצבור.
- * חשוב: גם המעבר השקט צריך שם פרמטר ייחודי, אחרת ההקשה הדמה תיצבר.
- */
-function buildTransition(text, stateParams = {}) {
-  // שם פרמטר דמה ייחודי לפי screen+step החדשים
-  const screen = stateParams.screen || 'x';
-  const step   = stateParams.step || '0';
-  const dummyName = 'd_' + screen + '_' + step;
-  return buildResponse(buildSilentRead(text, dummyName), stateParams);
-}
-
-// ============================================================================
-// הראוטר המרכזי
-// ============================================================================
-
-module.exports = async (req, res) => {
-  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-
-  // איחוד פרמטרים (GET + POST)
-  const q = Object.assign({}, req.query || {});
-  if (req.body && typeof req.body === 'object') {
-    Object.assign(q, req.body);
-  }
-
-  // נירמול מערכים -> ערך אחרון
-  for (const k in q) {
-    if (Array.isArray(q[k])) q[k] = q[k][q[k].length - 1];
-  }
-
-  // מקור האמת: screen + step. step מונע צבירת הקשות ישנות.
-  const currentScreenIn = getState(q, 'screen') || 'main';
-  const stepIn = parseInt(getState(q, 'step') || '0', 10) || 0;
-
-  // ההקשה הרלוונטית למסך הנוכחי בלבד (מתעלמת מכל הישנות)
-  const input = readInput(q, currentScreenIn, stepIn);
-
-  // הצעד הבא — לכל מסך חדש נגדיל אותו, כדי לקבל שם פרמטר טרי
-  const nextStep = stepIn + 1;
-
-  console.log(`[IVR] screen=${currentScreenIn} step=${stepIn} input="${input}" q=${JSON.stringify(q).substring(0, 260)}`);
-
-  // ----- עזרי בנייה לכל מסך, עם step נכון -----
-
-  // בונה תפריט עם פרמטר ייחודי לצעד, ומחזיר תגובה כולל state
-// חפש את המקום שבו מורכבת פקודת ה-read עבור תפריטים (למשל בתוך renderMenu)
-// ושנה את הלוגיקה כך שהפלט יחזיר שני חלקים מופרדים ב-\n :
-
-function renderMenu(lines, screenName, options = {}, extraState = {}) {
-  const fullText = lines.join('. '); // מחבר את כל השורות לטקסט אחד ארוך
-  const paramName = `k_${screenName}_${extraState.step || 1}`;
-  
-  // 1. הגדרת פקודת ההשמעה של הטקסט הארוך
-  const messageCmd = `id_list_message=t-${sanitizePart(fullText)}`;
-  
-  // 2. הגדרת פקודת ה-read שתהיה שקטה ותמתין רק להקשה (משתמשים בקובץ שקט או בטקסט ריק)
-  const readCmd = `read=f-empty=${paramName},no,1,1,${options.waitSec || 8},Digits,no,no,,,,,,,`;
-  
-  // 3. שילוב המשתנים (ה-State של היישום)
-  const stateParams = {
-    screen: screenName,
-    step: String(extraState.step ?? nextStep),
-    ...extraState
-  };
-  
-  // בניית התשובה הסופית עם ירידות שורה נקיות
-  let finalResponse = `${messageCmd}\n${readCmd}`;
-  
-  let index = 0;
-  for (const key in stateParams) {
-    let val = stateParams[key];
-    if (val === undefined || val === null) continue;
-    finalResponse += `\napi_add_${index}=${key}=${sanitizeStateValue(val)}`;
-    index++;
-  }
-
-  console.log('[RESPONSE]', finalResponse);
-  
-  return res.send(finalResponse);
-}
-
-  // מעבר שקט למסך חדש
-  function go(text, screen, extraState) {
-    const state = Object.assign({ screen, step: String(nextStep) }, extraState || {});
-    return res.send(buildTransition(text, state));
-  }
-
-  try {
-    // ========================================================================
-    // שלב א': עיבוד הקשה — אך ורק של המסך הנוכחי
-    // ========================================================================
-
-    let currentScreen = currentScreenIn;
-
-    // ---- תפריט ראשי ----
-    if (currentScreen === 'main' && input !== '') {
-      if      (input === '1') return go('טוען פוסטים אחרונים', 'recent');
-      else if (input === '2') return go('טוען נושאים חדשים', 'topics');
-      else if (input === '3') return go('טוען קטגוריות', 'categories');
-      else {
-        return renderMenu([
-          'הבחירה שגויה אנא נסו שנית',
-          'לפוסטים האחרונים הקישו 1',
-          'לנושאים החדשים שנפתחו הקישו 2',
-          'לכניסה לפי קטגוריות הקישו 3'
-        ], 'main', { waitSec: 8 });
-      }
-    }
-
-    // ---- פוסטים אחרונים ----
-    if (currentScreen === 'recent' && input !== '') {
-      const topicIds = splitIds(getState(q, 'tids'));
-      if (input === '0') {
-        return go('חוזרים לתפריט הראשי', 'main');
-      } else if (input === '*') {
-        return go('מרענן את הרשימה', 'recent');
-      } else {
-        const index = parseInt(input, 10) - 1;
-        if (!isNaN(index) && index >= 0 && index < topicIds.length) {
-          return go('טוען את הנושא', 'topic', { tid: topicIds[index], pidx: '0' });
-        }
-        return renderMenu([
-          'בחירה לא תקינה',
-          topicIds.length > 0
-            ? 'אנא הקישו מספר בין 1 ל ' + topicIds.length
-            : 'הרשימה אינה זמינה כעת',
-          'לרענון הרשימה הקישו כוכבית',
-          'לחזרה לתפריט הראשי הקישו אפס'
-        ], 'recent', { waitSec: 8 }, { tids: joinIds(topicIds) });
-      }
-    }
-
-    // ---- נושאים חדשים ----
-    if (currentScreen === 'topics' && input !== '') {
-      const topicIds = splitIds(getState(q, 'tids'));
-      if (input === '0') {
-        return go('חוזרים לתפריט הראשי', 'main');
-      } else if (input === '*') {
-        return go('מרענן את הרשימה', 'topics');
-      } else {
-        const index = parseInt(input, 10) - 1;
-        if (!isNaN(index) && index >= 0 && index < topicIds.length) {
-          return go('מיד נשמע את הנושא', 'topic', { tid: topicIds[index], pidx: '0' });
-        }
-        return renderMenu([
-          'בחירה לא תקינה',
-          topicIds.length > 0
-            ? 'אנא הקישו מספר בין 1 ל ' + topicIds.length
-            : 'הרשימה אינה זמינה כעת',
-          'לרענון הרשימה הקישו כוכבית',
-          'לחזרה לתפריט הראשי הקישו אפס'
-        ], 'topics', { waitSec: 8 }, { tids: joinIds(topicIds) });
-      }
-    }
-
-    // ---- קטגוריות ----
-    if (currentScreen === 'categories' && input !== '') {
-      const currentCid  = getState(q, 'curcid');
-      const categoryIds = splitIds(getState(q, 'cids'));
-      if (input === '0') {
-        return go('חוזרים לתפריט הראשי', 'main');
-      } else if (input === '*') {
-        if (currentCid) {
-          return go('טוען נושאים בקטגוריה', 'cattopics', { cid: currentCid, catpage: '1' });
-        }
-        // אין קטגוריה נוכחית — רענון רשימת הקטגוריות הראשיות
-        return go('מרענן קטגוריות', 'categories', { cid: '' });
-      } else {
-        const index = parseInt(input, 10) - 1;
-        if (!isNaN(index) && index >= 0 && index < categoryIds.length) {
-          return go('טוען קטגוריה', 'categories', { cid: categoryIds[index] });
-        }
-        return renderMenu([
-          'בחירה לא תקינה',
-          categoryIds.length > 0
-            ? 'אנא הקישו מספר בין 1 ל ' + categoryIds.length
-            : 'הרשימה אינה זמינה כעת',
-          'לחזרה לתפריט הראשי הקישו אפס'
-        ], 'categories', { waitSec: 8 }, {
-          cids: joinIds(categoryIds), curcid: currentCid || ''
-        });
-      }
-    }
-
-    // ---- נושאים בתוך קטגוריה ----
-    if (currentScreen === 'cattopics' && input !== '') {
-      const topicIds = splitIds(getState(q, 'tids'));
-      const cid      = getState(q, 'cid');
-      const catpage  = parseInt(getState(q, 'catpage') || '1', 10);
-      if (input === '0') {
-        return go('חוזרים לתפריט הראשי', 'main');
-      } else if (input === '*') {
-        return go('עמוד הבא', 'cattopics', { cid, catpage: String(catpage + 1) });
-      } else if (input === '#') {
-        return go('עמוד קודם', 'cattopics', { cid, catpage: String(Math.max(1, catpage - 1)) });
-      } else {
-        const index = parseInt(input, 10) - 1;
-        if (!isNaN(index) && index >= 0 && index < topicIds.length) {
-          return go('טוען את הנושא', 'topic', { tid: topicIds[index], pidx: '0' });
-        }
-        return renderMenu([
-          'בחירה שגויה',
-          topicIds.length > 0
-            ? 'אנא הקישו מספר בין 1 ל ' + topicIds.length
-            : 'הרשימה אינה זמינה כעת',
-          'לעמוד הבא הקישו כוכבית',
-          'לעמוד הקודם הקישו סולמית',
-          'לחזרה לתפריט הראשי הקישו אפס'
-        ], 'cattopics', { waitSec: 9 }, {
-          tids: joinIds(topicIds), cid, catpage: String(catpage)
-        });
-      }
-    }
-
-    // ---- ניווט בתוך נושא ----
-    if (currentScreen === 'topic' && input !== '') {
-      const tid  = getState(q, 'tid');
-      const pidx = parseInt(getState(q, 'pidx') || '0', 10);
-      if (input === '0') {
-        return go('חוזרים לתפריט הראשי', 'main');
-      } else if (input === '1') {
-        return go('ההודעה הבאה', 'topic', { tid, pidx: String(pidx + 1) });
-      } else if (input === '2') {
-        return go('ההודעה הקודמת', 'topic', { tid, pidx: String(Math.max(0, pidx - 1)) });
-      } else if (input === '3') {
-        return go('משמיע שוב', 'topic', { tid, pidx: String(pidx) });
-      } else if (input === '4') {
-        return go('מדלג חמש הודעות קדימה', 'topic', { tid, pidx: String(pidx + 5) });
-      } else if (input === '5') {
-        return go('חוזר לתחילת הנושא', 'topic', { tid, pidx: '0' });
-      } else if (input === '6') {
-        const details = String(getState(q, 'details') || '').split('|').filter(x => x);
-        details.push('לחזרה לשמיעת ההודעה הקישו 1');
-        return renderMenu(details, 'detback', { waitSec: 7 }, { tid, pidx: String(pidx) });
-      } else {
-        return go('בחירה שגויה', 'topic', { tid, pidx: String(pidx) });
-      }
-    }
-
-    // ---- חזרה מפרטי הודעה ----
-    if (currentScreen === 'detback' && input !== '') {
-      const tid  = getState(q, 'tid');
-      const pidx = parseInt(getState(q, 'pidx') || '0', 10);
-      return go('חוזר להודעה', 'topic', { tid, pidx: String(pidx) });
-    }
-
-    // ---- סיום נושא ----
-    if (currentScreen === 'topicend' && input !== '') {
-      const tid = getState(q, 'tid');
-      if (input === '1') {
-        return go('מתחילים מחדש', 'topic', { tid, pidx: '0' });
-      } else if (input === '2') {
-        return go('חוזרים לפוסטים אחרונים', 'recent');
-      } else {
-        return go('חוזרים לתפריט הראשי', 'main');
-      }
-    }
-
-    // ========================================================================
-    // שלב ב': הפקת המסכים (כשאין הקשה רלוונטית — מציגים את המסך)
-    // ========================================================================
-
-// ===== מסך ראשי (main) =====
-    if (currentScreen === 'main') {
-      const currentStep = getState(q, 'step') || '0';
-      
-      // שליפת המקש שהוקש על סמך הפרוטוקול הקיים בקוד שלך: k_main_0, k_main_1 וכו'
-      const inputKey = q[`k_main_${currentStep}`] || '';
-
-      // אם אין קלט (כניסה ראשונית לשלוחה, input ריק) -> נציג את התפריט מיד ועוצרים
-      if (!inputKey) {
-        return renderMenu([
-          'ברוכים הבאים לפורום מתמחים טופ הטלפוני',
-          'לכניסה לפוסטים האחרונים הקישו 1',
-          'לשמיעת הנושאים האחרונים שנפתחו הקישו 2',
-          'לכניסה לפי קטגוריות הקישו 3'
-        ], 'main', { waitSec: 8 }, { step: '1' });
-      }
-
-      // עיבוד הקלט במידה והמשתמש הקיש מקש
-      if (inputKey === '1') {
-        return go('recent', '0'); 
-      }
-      if (inputKey === '2') {
-        return go('topics', '0');
-      }
-      if (inputKey === '3') {
-        return go('categories', '0');
-      }
-
-      // אם הוקש מקש לא חוקי
-      return renderMenu([
-        'מקש שגוי',
-        'לכניסה לפוסטים האחרונים הקישו 1',
-        'לשמיעת הנושאים האחרונים שנפתחו הקישו 2',
-        'לכניסה לפי קטגוריות הקישו 3'
-      ], 'main', { waitSec: 8 }, { step: '0' });
-    }
-
-
-
-    // ===== פוסטים אחרונים =====
-    if (currentScreen === 'recent') {
-      console.log('[Render] recent posts');
-      const data   = await nbFetch('/recent');
-      const topics = (data.topics || []).slice(0, LIST_SIZE);
-
-      const parts = buildTopicListParts(
-        topics,
-        'הפוסטים האחרונים בפורום',
-        'לרענון הרשימה הקישו כוכבית. לחזרה לתפריט הראשי הקישו אפס'
-      );
-
-      return renderMenu(parts, 'recent', { waitSec: 10 }, {
-        tids: joinIds(topics.map(t => t.tid))
-      });
-    }
-
-    // ===== נושאים חדשים =====
-    if (currentScreen === 'topics') {
-      console.log('[Render] newest topics');
-      let data;
-      try {
-        data = await nbFetch('/recent?term=alltime&sort=newest');
-      } catch (e) {
-        data = await nbFetch('/recent');
-      }
-
-      const topics = (data.topics || [])
-        .slice()
-        .sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0))
-        .slice(0, LIST_SIZE);
-
-      const parts = buildTopicListParts(
-        topics,
-        'הנושאים החדשים ביותר שנפתחו בפורום',
-        'לרענון הרשימה הקישו כוכבית. לחזרה לתפריט הראשי הקישו אפס'
-      );
-
-      return renderMenu(parts, 'topics', { waitSec: 10 }, {
-        tids: joinIds(topics.map(t => t.tid))
-      });
-    }
-
-    // ===== קטגוריות =====
-    if (currentScreen === 'categories') {
-      const cid = getState(q, 'cid');
-      console.log(`[Render] categories, cid=${cid || 'root'}`);
-
-      let categoriesList = [];
-      let headerText     = '';
-
-      if (!cid) {
-        const data     = await nbFetch('/categories');
-        categoriesList = (data.categories || []).filter(c => !c.disabled).slice(0, LIST_SIZE);
-        headerText     = 'תפריט קטגוריות ראשיות';
-      } else {
-        const data       = await nbFetch('/category/' + cid);
-        const parentName = cleanText(data.name || '');
-        categoriesList   = (data.children || []).filter(c => !c.disabled).slice(0, LIST_SIZE);
-        headerText       = 'קטגוריית ' + parentName;
-      }
-
-      if (categoriesList.length > 0) {
-        const parts = buildCategoryListParts(categoriesList, headerText);
-        if (cid) parts.push('לשמיעת הנושאים בקטגוריה זו הקישו כוכבית');
-        parts.push('לחזרה לתפריט הראשי הקישו אפס');
-
-        return renderMenu(parts, 'categories', { waitSec: 10 }, {
-          cids: joinIds(categoriesList.map(c => c.cid)),
-          curcid: cid || ''
-        });
-      } else if (cid) {
-        return go('טוען נושאים', 'cattopics', { cid, catpage: '1' });
-      } else {
-        return go('לא נמצאו קטגוריות חוזר לתפריט', 'main');
-      }
-    }
-
-    // ===== נושאים בתוך קטגוריה =====
-    if (currentScreen === 'cattopics') {
-      const cid     = getState(q, 'cid');
-      const catpage = Math.max(1, parseInt(getState(q, 'catpage') || '1', 10));
-
-      if (!cid) {
-        return go('אירעה שגיאה חוזר לתפריט', 'main');
-      }
-
-      console.log(`[Render] cattopics cid=${cid}, page=${catpage}`);
-      const data    = await nbFetch('/category/' + cid + '?page=' + catpage);
-      const topics  = (data.topics || []).slice(0, LIST_SIZE);
-      const catName = cleanText(data.name || '');
-
-      const footerParts = [];
-      if (catpage > 1)                 footerParts.push('לעמוד הקודם הקישו סולמית');
-      if (topics.length === LIST_SIZE) footerParts.push('לעמוד הבא הקישו כוכבית');
-      footerParts.push('לחזרה לתפריט הראשי הקישו אפס');
-
-      const parts = buildTopicListParts(
-        topics,
-        `נושאים בקטגוריית ${catName} עמוד ${catpage}`,
-        footerParts.join('. ')
-      );
-
-      return renderMenu(parts, 'cattopics', { waitSec: 10 }, {
-        tids: joinIds(topics.map(t => t.tid)),
-        cid, catpage: String(catpage)
-      });
-    }
-
-    // ===== שמיעת נושא =====
-    if (currentScreen === 'topic') {
-      const tid  = getState(q, 'tid');
-      const pidx = parseInt(getState(q, 'pidx') || '0', 10);
-
-      if (!tid) {
-        return go('שגיאת מזהה נושא', 'main');
-      }
-
-      console.log(`[Render] topic tid=${tid}, postIndex=${pidx}`);
-
-      const result     = await fetchTopicPost(tid, pidx);
-      const topic      = result.topic;
-      const post       = result.post;
-      const totalPosts = result.totalPosts;
-      const topicTitle = ttsCut(topic.title, MAX_TITLE_CHARS);
-
-      if (!post || pidx >= totalPosts) {
-        return renderMenu([
-          'הגעתם לסוף ההודעות בנושא זה',
-          totalPosts === 1 ? 'הנושא כולל הודעה אחת בלבד'
-                           : `הנושא כולל ${totalPosts} הודעות בסך הכל`,
-          'להאזנה חוזרת מההתחלה הקישו 1',
-          'לרשימת הפוסטים האחרונים הקישו 2',
-          'לחזרה לתפריט הראשי הקישו אפס'
-        ], 'topicend', { waitSec: 9 }, { tid });
-      }
-
-      const postBody   = ttsCut(post.content, MAX_BODY_CHARS);
-      const authorName = post.user && post.user.username ? post.user.username : 'משתמש';
-
-      const audioParts = [];
-      if (pidx === 0) {
-        audioParts.push('כותרת הנושא היא ' + topicTitle);
-        audioParts.push(totalPosts === 1 ? 'הנושא מכיל הודעה אחת'
-                                         : `הנושא מכיל ${totalPosts} הודעות`);
-      }
-      audioParts.push(`הודעה מספר ${pidx + 1} מתוך ${totalPosts}`);
-      audioParts.push(`נכתבה על ידי ${authorName}`);
-      audioParts.push(postBody);
-      audioParts.push('להודעה הבאה הקישו 1');
-      audioParts.push('להודעה הקודמת הקישו 2');
-      audioParts.push('להאזנה חוזרת הקישו 3');
-      audioParts.push('לדילוג חמש הודעות הקישו 4');
-      audioParts.push('לתחילת הנושא הקישו 5');
-      audioParts.push('לפרטי ההודעה הקישו 6');
-      audioParts.push('לתפריט הראשי הקישו אפס');
-
-      const postDetails = [
-        `פרטי הודעה מספר ${pidx + 1}`,
-        `המחבר ${authorName}`,
-        `פורסם ${timeAgo(post.timestamp)}`,
-        totalPosts === 1 ? 'הנושא כולל הודעה אחת'
-                         : `הנושא כולל ${totalPosts} הודעות בסך הכל`
-      ];
-      const detailsSafe = postDetails.map(d => sanitizePart(d)).join('|');
-
-      return renderMenu(audioParts, 'topic', { waitSec: 15 }, {
-        tid, pidx: String(pidx), details: detailsSafe
-      });
-    }
-
-    // ===== מסך פרטי הודעה (detback) — מוצג מתוך topicnav, אבל ליתר בטחון =====
-    if (currentScreen === 'detback') {
-      const tid  = getState(q, 'tid');
-      const pidx = parseInt(getState(q, 'pidx') || '0', 10);
-      const details = String(getState(q, 'details') || '').split('|').filter(x => x);
-      if (!details.length) details.push('אין פרטים זמינים');
-      details.push('לחזרה לשמיעת ההודעה הקישו 1');
-      return renderMenu(details, 'detback', { waitSec: 7 }, { tid, pidx: String(pidx) });
-    }
-
-    // ===== סיום נושא (topicend) — תצוגה אם הגענו לכאן ישירות =====
-    if (currentScreen === 'topicend') {
-      const tid = getState(q, 'tid');
-      return renderMenu([
-        'הגעתם לסוף ההודעות בנושא זה',
-        'להאזנה חוזרת מההתחלה הקישו 1',
-        'לרשימת הפוסטים האחרונים הקישו 2',
-        'לחזרה לתפריט הראשי הקישו אפס'
-      ], 'topicend', { waitSec: 9 }, { tid });
-    }
-
-// ===== הגנת קצה =====
-    console.warn(`[Fallback] Unhandled screen: ${currentScreen}`);
-    return go('חוזר להתחלה', 'main');
-
-  } catch (globalError) {
-    console.error('[Global Exception]', globalError.message);
-    
-    // תיקון זמני משלים כדי שלא יקרוס במקרה והמשתנים לא הוגדרו בשגיאה הכללית
-    const fallbackParam = (typeof inputKey === 'function') ? inputKey('main', '1') : 'k_main_1';
-    
-    const readCmd = buildReadMenu([
-      'אירעה שגיאה בטעינת הנתונים מהפורום',
-      'אנא נסו שוב מאוחר יותר',
-      'לחזרה לתפריט הראשי הקישו אפס'
-    ], fallbackParam, { waitSec: 6 });
-    
-    return res.send(buildResponse(readCmd, { screen: 'main', step: '1' }));
-  }
+/** אפשרויות read סטנדרטיות לתפריטי הקשה (תפריט עם ספרה בודדת). */
+const MENU_READ_OPTS = {
+  max_digits: 2,
+  min_digits: 1,
+  sec_wait: 7,
+  allow_empty: false,
+  block_asterisk_key: false,
+  block_zero_key: false
 };
+
+/** ID של שיחה -> מצב ניווט (מיקום אחרון) לצורך "חזרה למיקום האחרון". נשמר בזיכרון התהליך. */
+const lastPosition = new Map(); // callId -> { type: 'topic', tid, postIndex }
+
+function saveLastPosition(callId, state) {
+  lastPosition.set(callId, state);
+}
+function getLastPosition(callId) {
+  return lastPosition.get(callId);
+}
+
+/* ============================================================
+ * 6. הראוטר הראשי - כל זרימת השיחה
+ * ============================================================ */
+
+const router = YemotRouter({
+  printLog: process.env.NODE_ENV !== 'production',
+  timeout: 25000,
+  uncaughtErrorHandler: async (call, error) => {
+    console.error('שגיאה לא מטופלת בשיחה', call.callId, error);
+    try {
+      call.id_list_message(withMusic([
+        { type: 'text', data: 'אירעה תקלה זמנית במערכת. אנא נסו שוב מאוחר יותר', removeInvalidChars: true }
+      ]));
+    } catch (_) { /* השיחה כבר בתהליך סגירה */ }
+  }
+});
+
+/* ---------- תפריט ראשי ---------- */
+
+router.get('/', async (call) => {
+  const choice = await call.read(withMusic([
+    { type: 'text', data: 'ברוכים הבאים לפורום מתמחים טופ הקולי', removeInvalidChars: true },
+    { type: 'text', data: 'להאזנה לפוסטים אחרונים הקישו 1', removeInvalidChars: true },
+    { type: 'text', data: 'לנושאים אחרונים הקישו 2', removeInvalidChars: true },
+    { type: 'text', data: 'לקטגוריות הקישו 3', removeInvalidChars: true },
+    { type: 'text', data: 'לחיפוש הקישו 4', removeInvalidChars: true },
+    { type: 'text', data: 'לתפריט אישי הקישו 5', removeInvalidChars: true },
+    { type: 'text', data: 'לעזרה הקישו 6', removeInvalidChars: true },
+    { type: 'text', data: 'להגדרות הקישו 8', removeInvalidChars: true },
+    { type: 'text', data: 'לחזרה למיקום האחרון הקישו 0', removeInvalidChars: true }
+  ]), 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
+
+  switch (choice) {
+    case '1': return call.go_to_folder('/recent');
+    case '2': return call.go_to_folder('/topics');
+    case '3': return call.go_to_folder('/categories');
+    case '4': return call.go_to_folder('/search');
+    case '5': return call.go_to_folder('/personal');
+    case '6': return call.go_to_folder('/help');
+    case '8': return call.go_to_folder('/settings');
+    case '9': return call.go_to_folder('/admin');
+    case '0': return call.go_to_folder('/resume');
+    default: return call.restart_ext();
+  }
+});
+
+/* ---------- פוסטים אחרונים / נושאים אחרונים ---------- */
+
+async function recentFlow(call, page) {
+  let data;
+  try {
+    data = await fetchRecentTopics(page);
+  } catch (err) {
+    return call.id_list_message(withMusic([
+      { type: 'text', data: 'לא ניתן לטעון כרגע פוסטים אחרונים, אנא נסו שוב', removeInvalidChars: true }
+    ]));
+  }
+
+  const topics = data.topics || [];
+  if (topics.length === 0) {
+    return call.id_list_message(withMusic([
+      { type: 'text', data: 'לא נמצאו פוסטים בעת הזו', removeInvalidChars: true }
+    ]));
+  }
+
+  await browseTopicList(call, topics, {
+    onOpen: (t) => call.go_to_folder(`/topic?tid=${t.tid}&slug=${encodeURIComponent(t.slug || '')}&page=1&idx=0`),
+    onNextPage: () => recentFlow(call, page + 1),
+    onPrevPage: page > 1 ? () => recentFlow(call, page - 1) : null,
+    context: `recent:${page}`
+  });
+}
+
+router.get('/recent', async (call) => {
+  const page = parseInt(call.values.page, 10) || 1;
+  await recentFlow(call, page);
+});
+
+router.get('/topics', async (call) => {
+  // "נושאים אחרונים" מיושם כאותה זרימה של הפוסטים האחרונים (NodeBB /recent
+  // מחזיר נושאים ממוינים לפי פעילות אחרונה, וזו למעשה גם רשימת הנושאים האחרונים)
+  const page = parseInt(call.values.page, 10) || 1;
+  await recentFlow(call, page);
+});
+
+/**
+ * זרימת עיון גנרית ברשימת נושאים: מקריאה כותרת+מטא לכל נושא ברשימה,
+ * ומאפשרת ניווט 9/7/0/#/* ובחירת נושא לפי מספרו הסידורי ברשימה.
+ */
+async function browseTopicList(call, topics, { onOpen, onNextPage, onPrevPage, context }) {
+  let i = 0;
+  while (i < topics.length) {
+    const topic = topics[i];
+    const messages = withMusic([
+      { type: 'text', data: `פריט ${i + 1} מתוך ${topics.length}`, removeInvalidChars: true },
+      ...buildTopicHeaderMessages(topic),
+      { type: 'text', data: 'לפתיחה הקישו 1', removeInvalidChars: true },
+      navHintMessage()
+    ]);
+
+    const key = await call.read(messages, 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
+
+    if (key === '1') {
+      saveLastPosition(call.callId, { type: 'list', context, index: i });
+      return onOpen(topic);
+    }
+    if (key === '9') { i++; continue; }
+    if (key === '7') { i = Math.max(0, i - 1); continue; }
+    if (key === '0') return call.go_to_folder('/');
+    if (key === '*') return call.go_to_folder('/');
+    if (key === '#') return call.go_to_folder('/');
+    // לא הוקשה תשובה תקינה בזמן - ממשיכים לפריט הבא כברירת מחדל
+    i++;
+  }
+
+  // הגענו לסוף הרשימה בעמוד הנוכחי
+  const nextKey = await call.read(withMusic([
+    { type: 'text', data: 'הגעתם לסוף הרשימה בעמוד הנוכחי', removeInvalidChars: true },
+    { type: 'text', data: onNextPage ? 'לעמוד הבא הקישו 9' : '', removeInvalidChars: true },
+    { type: 'text', data: onPrevPage ? 'לעמוד הקודם הקישו 7' : '', removeInvalidChars: true },
+    { type: 'text', data: 'לתפריט הראשי הקישו 0', removeInvalidChars: true }
+  ]), 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '0' });
+
+  if (nextKey === '9' && onNextPage) return onNextPage();
+  if (nextKey === '7' && onPrevPage) return onPrevPage();
+  return call.go_to_folder('/');
+}
+
+/* ---------- קטגוריות ---------- */
+
+router.get('/categories', async (call) => {
+  let data;
+  try {
+    data = await fetchCategories();
+  } catch (err) {
+    return call.id_list_message(withMusic([
+      { type: 'text', data: 'לא ניתן לטעון כרגע את רשימת הקטגוריות, אנא נסו שוב', removeInvalidChars: true }
+    ]));
+  }
+
+  const categories = (data.categories || []).filter((c) => !c.disabled);
+  if (categories.length === 0) {
+    return call.id_list_message(withMusic([
+      { type: 'text', data: 'לא נמצאו קטגוריות', removeInvalidChars: true }
+    ]));
+  }
+
+  let i = 0;
+  while (i < categories.length) {
+    const cat = categories[i];
+    const key = await call.read(withMusic([
+      { type: 'text', data: `קטגוריה ${i + 1} מתוך ${categories.length}`, removeInvalidChars: true },
+      { type: 'text', data: sanitizeForSpeech(cat.name), removeInvalidChars: true },
+      { type: 'text', data: 'לכניסה הקישו 1', removeInvalidChars: true },
+      navHintMessage()
+    ]), 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
+
+    if (key === '1') {
+      return call.go_to_folder(`/category?cid=${cat.cid}&slug=${encodeURIComponent(cat.slug || '')}&page=1`);
+    }
+    if (key === '9') { i++; continue; }
+    if (key === '7') { i = Math.max(0, i - 1); continue; }
+    if (key === '0' || key === '*') return call.go_to_folder('/');
+    if (key === '#') return call.go_to_folder('/');
+    i++;
+  }
+
+  return call.go_to_folder('/');
+});
+
+/** האזנה לכל האשכולות בקטגוריה נתונה. */
+router.get('/category', async (call) => {
+  const cid = call.values.cid;
+  const slugParam = call.values.slug || '';
+  const page = parseInt(call.values.page, 10) || 1;
+
+  let data;
+  try {
+    data = await fetchCategoryTopics(cid, slugParam, page);
+  } catch (err) {
+    return call.id_list_message(withMusic([
+      { type: 'text', data: 'לא ניתן לטעון כרגע את תוכן הקטגוריה, אנא נסו שוב', removeInvalidChars: true }
+    ]));
+  }
+
+  const topics = data.topics || [];
+  if (topics.length === 0) {
+    return call.id_list_message(withMusic([
+      { type: 'text', data: 'אין אשכולות בקטגוריה זו כרגע', removeInvalidChars: true }
+    ]));
+  }
+
+  await browseTopicList(call, topics, {
+    onOpen: (t) => call.go_to_folder(`/topic?tid=${t.tid}&slug=${encodeURIComponent(t.slug || '')}&page=1&idx=0`),
+    onNextPage: () => call.go_to_folder(`/category?cid=${cid}&slug=${encodeURIComponent(slugParam)}&page=${page + 1}`),
+    onPrevPage: page > 1 ? () => call.go_to_folder(`/category?cid=${cid}&slug=${encodeURIComponent(slugParam)}&page=${page - 1}`) : null,
+    context: `category:${cid}:${page}`
+  });
+});
+
+/* ---------- אשכול: האזנה לכל ההודעות, מעבר בין הודעה להודעה, דילוג ---------- */
+
+router.get('/topic', async (call) => {
+  const tid = call.values.tid;
+  const slugParam = call.values.slug || '';
+  const page = parseInt(call.values.page, 10) || 1;
+  let idx = parseInt(call.values.idx, 10) || 0;
+
+  let data;
+  try {
+    data = await fetchTopic(tid, slugParam, page);
+  } catch (err) {
+    return call.id_list_message(withMusic([
+      { type: 'text', data: 'לא ניתן לטעון כרגע את האשכול, אנא נסו שוב', removeInvalidChars: true }
+    ]));
+  }
+
+  const posts = data.posts || [];
+  if (posts.length === 0) {
+    return call.id_list_message(withMusic([
+      { type: 'text', data: 'לא נמצאו הודעות באשכול זה', removeInvalidChars: true }
+    ]));
+  }
+
+  const pageCount = data.pagination?.pageCount || 1;
+
+  while (idx >= 0 && idx < posts.length) {
+    saveLastPosition(call.callId, { type: 'topic', tid, slug: slugParam, page, idx });
+
+    const messages = withMusic([
+      ...buildPostMessages(posts[idx], idx, posts.length),
+      navHintMessage()
+    ]);
+
+    const key = await call.read(messages, 'tap', { ...MENU_READ_OPTS, max_digits: 2, allow_empty: true, empty_val: '9' });
+
+    if (key === '9' || key === '') {
+      if (idx + 1 < posts.length) { idx++; continue; }
+      // סוף עמוד ההודעות - האם יש עמוד נוסף באשכול?
+      if (page < pageCount) return call.go_to_folder(`/topic?tid=${tid}&slug=${encodeURIComponent(slugParam)}&page=${page + 1}&idx=0`);
+      const endKey = await call.read(withMusic([
+        { type: 'text', data: 'הגעתם לסוף האשכול', removeInvalidChars: true },
+        { type: 'text', data: 'לחזרה לקטגוריה הקישו 0, לתפריט הראשי הקישו כוכבית', removeInvalidChars: true }
+      ]), 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '0' });
+      if (endKey === '0') return call.go_to_folder('/categories');
+      return call.go_to_folder('/');
+    }
+    if (key === '7') {
+      if (idx > 0) { idx--; continue; }
+      if (page > 1) return call.go_to_folder(`/topic?tid=${tid}&slug=${encodeURIComponent(slugParam)}&page=${page - 1}&idx=0`);
+      continue; // כבר בהודעה הראשונה
+    }
+    if (key === '0') return call.go_to_folder('/categories');
+    if (key === '*') return call.go_to_folder('/');
+    if (key === '#') return call.go_to_folder('/');
+
+    // ניווט לפי ספרות: הקשה של מספר עובר ישירות להודעה המבוקשת באשכול הנוכחי
+    const target = parseInt(key, 10);
+    if (!isNaN(target) && target >= 1 && target <= posts.length) {
+      idx = target - 1;
+      continue;
+    }
+  }
+});
+
+/* ---------- חזרה למיקום האחרון / המשך האזנה ---------- */
+
+router.get('/resume', async (call) => {
+  const pos = getLastPosition(call.callId);
+  if (!pos || pos.type !== 'topic') {
+    return call.id_list_message(withMusic([
+      { type: 'text', data: 'לא נמצא מיקום שמור מהשיחה הנוכחית', removeInvalidChars: true }
+    ]), { prependToNextAction: true });
+  }
+  return call.go_to_folder(`/topic?tid=${pos.tid}&slug=${encodeURIComponent(pos.slug || '')}&page=${pos.page}&idx=${pos.idx}`);
+});
+
+/* ---------- חיפוש ---------- */
+
+router.get('/search', async (call) => {
+  const term = await call.read(withMusic([
+    { type: 'text', data: 'אנא הקליטו את מילת החיפוש ולאחריה הקישו סולמית', removeInvalidChars: true }
+  ]), 'stt', { max_digits: '' });
+
+  const query = (term || '').trim();
+  if (!query) {
+    return call.id_list_message(withMusic([
+      { type: 'text', data: 'לא זוהתה מילת חיפוש, נסו שוב מאוחר יותר', removeInvalidChars: true }
+    ]));
+  }
+
+  let data;
+  try {
+    data = await searchForum(query, 1);
+  } catch (err) {
+    return call.id_list_message(withMusic([
+      { type: 'text', data: 'שגיאה בביצוע החיפוש, אנא נסו שוב', removeInvalidChars: true }
+    ]));
+  }
+
+  const results = data.posts || data.topics || [];
+  if (results.length === 0) {
+    return call.id_list_message(withMusic([
+      { type: 'text', data: 'לא נמצאו תוצאות התואמות את החיפוש', removeInvalidChars: true }
+    ]));
+  }
+
+  const asTopics = results.map((r) => r.topic ? { ...r.topic, tid: r.topic.tid || r.tid } : r);
+
+  await browseTopicList(call, asTopics, {
+    onOpen: (t) => call.go_to_folder(`/topic?tid=${t.tid}&slug=${encodeURIComponent(t.slug || '')}&page=1&idx=0`),
+    onNextPage: null,
+    onPrevPage: null,
+    context: `search:${query}`
+  });
+});
+
+/* ---------- תפריט אישי ---------- */
+
+router.get('/personal', async (call) => {
+  const key = await call.read(withMusic([
+    { type: 'text', data: 'תפריט אישי', removeInvalidChars: true },
+    { type: 'text', data: 'להמשך האזנה מהמקום האחרון הקישו 1', removeInvalidChars: true },
+    { type: 'text', data: 'לחזרה לתפריט הראשי הקישו 0', removeInvalidChars: true }
+  ]), 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
+
+  if (key === '1') return call.go_to_folder('/resume');
+  return call.go_to_folder('/');
+});
+
+/* ---------- עזרה ---------- */
+
+router.get('/help', async (call) => {
+  await call.id_list_message(withMusic([
+    { type: 'text', data: 'מדריך ניווט מהיר', removeInvalidChars: true },
+    { type: 'text', data: 'בכל שלב, הקישו 9 למעבר להודעה או פריט הבא', removeInvalidChars: true },
+    { type: 'text', data: 'הקישו 7 לחזרה להודעה או לפריט הקודם', removeInvalidChars: true },
+    { type: 'text', data: 'הקישו 0 לחזרה לתפריט הקודם או לקטגוריה', removeInvalidChars: true },
+    { type: 'text', data: 'הקישו כוכבית בכל עת לחזרה לתפריט הראשי', removeInvalidChars: true },
+    { type: 'text', data: 'הקישו סולמית לחזרה מיידית לדף הבית', removeInvalidChars: true },
+    { type: 'text', data: 'בתוך אשכול, ניתן להקיש את מספר ההודעה כדי לדלג ישירות אליה', removeInvalidChars: true }
+  ]), { prependToNextAction: true });
+  return call.go_to_folder('/');
+});
+
+/* ---------- הגדרות ---------- */
+
+router.get('/settings', async (call) => {
+  const key = await call.read(withMusic([
+    { type: 'text', data: 'תפריט הגדרות', removeInvalidChars: true },
+    { type: 'text', data: 'לניקוי המטמון והבאת תוכן עדכני הקישו 1', removeInvalidChars: true },
+    { type: 'text', data: 'לחזרה לתפריט הראשי הקישו 0', removeInvalidChars: true }
+  ]), 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
+
+  if (key === '1') {
+    cache.flushAll();
+    await call.id_list_message(withMusic([
+      { type: 'text', data: 'המטמון נוקה בהצלחה', removeInvalidChars: true }
+    ]), { prependToNextAction: true });
+  }
+  return call.go_to_folder('/');
+});
+
+/* ---------- תפריט מנהל (מוגן בקוד סודי מסביבת ההרצה) ---------- */
+
+router.get('/admin', async (call) => {
+  const adminPin = process.env.ADMIN_PIN;
+  if (!adminPin) {
+    return call.id_list_message(withMusic([
+      { type: 'text', data: 'תפריט מנהל אינו מוגדר במערכת', removeInvalidChars: true }
+    ]));
+  }
+
+  const pin = await call.read(withMusic([
+    { type: 'text', data: 'אנא הקישו את קוד המנהל', removeInvalidChars: true }
+  ]), 'tap', { max_digits: 10, min_digits: 1, sec_wait: 8, typing_playback_mode: 'No' });
+
+  if (pin !== adminPin) {
+    return call.id_list_message(withMusic([
+      { type: 'text', data: 'קוד שגוי', removeInvalidChars: true }
+    ]));
+  }
+
+  const key = await call.read(withMusic([
+    { type: 'text', data: 'תפריט מנהל', removeInvalidChars: true },
+    { type: 'text', data: 'לניקוי כל המטמון הקישו 1', removeInvalidChars: true },
+    { type: 'text', data: `סטטיסטיקת מטמון: ${cache.keys().length} רשומות`, removeInvalidChars: true },
+    { type: 'text', data: 'לחזרה הקישו 0', removeInvalidChars: true }
+  ]), 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
+
+  if (key === '1') {
+    cache.flushAll();
+    await call.id_list_message(withMusic([
+      { type: 'text', data: 'המטמון נוקה', removeInvalidChars: true }
+    ]), { prependToNextAction: true });
+  }
+  return call.go_to_folder('/');
+});
+
+/* ============================================================
+ * 7. הרכבת אפליקציית Express וייצוא ל-Vercel
+ * ============================================================ */
+
+const app = express();
+app.disable('x-powered-by');
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+
+// בריאות המערכת - לבדיקה ידנית/ניטור
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok', server: SERVER_BASE, cacheKeys: cache.keys().length, time: new Date().toISOString() });
+});
+
+// חיבור הראוטר של ימות - כל תעבורת ה-API extension מגיעה ל-/api/yemot
+app.use('/api/yemot', router.asExpressRouter);
+
+// גם על השורש, לנוחות אם מוגדר api_link ללא נתיב משנה
+app.use('/', router.asExpressRouter);
+
+if (require.main === module) {
+  const port = process.env.PORT || 3000;
+  app.listen(port, () => console.log(`מתמחים IVR פועל על פורט ${port}`));
+}
+
+module.exports = app;

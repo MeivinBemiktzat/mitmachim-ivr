@@ -323,22 +323,49 @@ async function fetchTopic(tid, slug, page = 1) {
  *  שמרה בפועל (ולא בעיית רשת/הרשאות). */
 async function downloadRecording(recordingPath) {
   const token = process.env.YEMOT_MANAGEMENT_TOKEN;
+
   if (!token) {
-    throw new Error('YEMOT_MANAGEMENT_TOKEN לא מוגדר בסביבה - לא ניתן להוריד הקלטות');
+    throw new Error('YEMOT_MANAGEMENT_TOKEN לא מוגדר בסביבה');
   }
-  try {
-    const { data } = await axios.get(`${YEMOT_MANAGEMENT_BASE}/DownloadFile`, {
-      params: { token, path: recordingPath },
-      responseType: 'arraybuffer',
-      timeout: 15000
-    });
-    return Buffer.from(data);
-  } catch (err) {
-    if (err.response?.status === 404) {
-      throw new Error(`קובץ ההקלטה לא נמצא בנתיב ${recordingPath} - יתכן שההקלטה לא נשמרה או ששם הקובץ שונה`);
+
+  const pathsToTry = [
+    recordingPath,
+    recordingPath.replace('//', '/'),
+    recordingPath.replace('ivr2:/', 'ivr2://')
+  ];
+
+  let lastError;
+
+  for (const path of pathsToTry) {
+    try {
+      console.log('[downloadRecording] מנסה נתיב:', path);
+
+      const { data } = await axios.get(
+        `${YEMOT_MANAGEMENT_BASE}/DownloadFile`,
+        {
+          params: {
+            token,
+            path
+          },
+          responseType: 'arraybuffer',
+          timeout: 15000
+        }
+      );
+
+      return Buffer.from(data);
+
+    } catch (err) {
+      lastError = err;
+
+      console.log(
+        '[downloadRecording] נכשל:',
+        path,
+        err.response?.status || err.message
+      );
     }
-    throw err;
   }
+
+  throw lastError;
 }
 
 /** שולח את בייטי ה-wav לפונקציית התמלול (Python, api/transcribe.py) ומחזיר
@@ -405,16 +432,22 @@ function buildTopicHeaderMessages(topic) {
  *  יש להביא את עמוד ההודעות האחרון של הנושא ולקחת ממנו את ההודעה האחרונה -
  *  באותה שיטה בדיוק ש-topicFlow כבר משתמשת בה לניווט בין עמודים (pageCount).
  *  עלות: קריאת API נוספת אחת per topic ברשימה - מקובל לפי בקשת המשתמש. */
-async function fetchLastPost(tid, slug, postcount) {
-  // הערכת עמוד אחרון מתוך postcount (20 הודעות לעמוד, כפי שכבר ידוע לנו
-  // מ-topicFlow/pageCount) - חוסך בקשת "מידע כללי" נפרדת רק כדי לגלות pageCount.
-  const estimatedLastPage = Math.max(1, Math.ceil((postcount || 1) / 20));
-  const data = await fetchTopic(tid, slug, estimatedLastPage);
+async function fetchLastPost(tid, slug) {
+  // קודם מביאים את העמוד הראשון כדי לדעת כמה עמודים קיימים
+  const firstPage = await fetchTopic(tid, slug, 1);
+
+  const lastPage = firstPage.pagination?.pageCount || 1;
+
+  // אם יש כמה עמודים מביאים את האחרון
+  const data = lastPage > 1
+    ? await fetchTopic(tid, slug, lastPage)
+    : firstPage;
+
   const posts = data.posts || [];
-  // הגנה: אם ההערכה שגויה (postcount לא מדויק) ו-fetchTopic החזיר עמוד ראשון
-  // בפועל בגלל page-clamping בצד השרת, עדיין ניקח את ההודעה האחרונה שהתקבלה -
-  // זו עדיין קרובה משמעותית יותר לאמת מ-topic.teaser הלא-אמין.
-  return posts.length > 0 ? posts[posts.length - 1] : null;
+
+  return posts.length > 0
+    ? posts[posts.length - 1]
+    : null;
 }
 
 /** בונה מערך messages להקראת ההודעה האחרונה האמיתית של נושא (ר' fetchLastPost
@@ -423,7 +456,7 @@ async function fetchLastPost(tid, slug, postcount) {
 async function buildTeaserMessages(topic, index, total) {
   let lastPost = null;
   try {
-    lastPost = await fetchLastPost(topic.tid, topic.slug || '', topic.postcount);
+    lastPost = await fetchLastPost(topic.tid, topic.slug || '');
   } catch (err) {
     console.error('[buildTeaserMessages] שגיאה בשליפת ההודעה האחרונה', topic.tid, err.message);
   }
@@ -655,7 +688,9 @@ async function voiceSearchFlow(call) {
   // היחסי שמשמש את call.read עצמו), עם סיומת .wav מפורשת.
   let queryText;
   try {
-    const recordingPath = `${VOICE_SEARCH_MGMT_PATH}/${VOICE_SEARCH_RECORD_FILENAME}.wav`;
+    const recordingPath =
+  `${VOICE_SEARCH_MGMT_PATH}/${VOICE_SEARCH_RECORD_FILENAME}.wav`
+    .replace('//', '/');
     const wavBuffer = await downloadRecording(recordingPath);
     queryText = await transcribeRecording(wavBuffer);
   } catch (err) {

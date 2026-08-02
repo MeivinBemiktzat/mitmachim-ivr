@@ -323,41 +323,22 @@ async function fetchTopic(tid, slug, page = 1) {
  *  שמרה בפועל (ולא בעיית רשת/הרשאות). */
 async function downloadRecording(recordingPath) {
   const token = process.env.YEMOT_MANAGEMENT_TOKEN;
-
   if (!token) {
-    throw new Error('YEMOT_MANAGEMENT_TOKEN לא מוגדר בסביבה');
+    throw new Error('YEMOT_MANAGEMENT_TOKEN לא מוגדר בסביבה - לא ניתן להוריד הקלטות');
   }
-
-  // val_2 מימות הוא הנתיב הפנימי, למשל:
-  // 8/query.wav
-  //
-  // DownloadFile של Management API צריך:
-  // ivr2:/8/query.wav
-  const normalizedPath = String(recordingPath || '')
-    .trim()
-    .replace(/^ivr2:\/*/, '');
-
-  if (!normalizedPath) {
-    throw new Error('נתיב הקלטה ריק');
-  }
-
-  const path = `ivr2:/${normalizedPath}`;
-
-  console.log('[downloadRecording] נתיב סופי:', path);
-
-  const { data } = await axios.get(
-    `${YEMOT_MANAGEMENT_BASE}/DownloadFile`,
-    {
-      params: {
-        token,
-        path
-      },
+  try {
+    const { data } = await axios.get(`${YEMOT_MANAGEMENT_BASE}/DownloadFile`, {
+      params: { token, path: recordingPath },
       responseType: 'arraybuffer',
       timeout: 15000
+    });
+    return Buffer.from(data);
+  } catch (err) {
+    if (err.response?.status === 404) {
+      throw new Error(`קובץ ההקלטה לא נמצא בנתיב ${recordingPath} - יתכן שההקלטה לא נשמרה או ששם הקובץ שונה`);
     }
-  );
-
-  return Buffer.from(data);
+    throw err;
+  }
 }
 
 /** שולח את בייטי ה-wav לפונקציית התמלול (Python, api/transcribe.py) ומחזיר
@@ -424,22 +405,28 @@ function buildTopicHeaderMessages(topic) {
  *  יש להביא את עמוד ההודעות האחרון של הנושא ולקחת ממנו את ההודעה האחרונה -
  *  באותה שיטה בדיוק ש-topicFlow כבר משתמשת בה לניווט בין עמודים (pageCount).
  *  עלות: קריאת API נוספת אחת per topic ברשימה - מקובל לפי בקשת המשתמש. */
-async function fetchLastPost(tid, slug) {
-  // קודם מביאים את העמוד הראשון כדי לדעת כמה עמודים קיימים
-  const firstPage = await fetchTopic(tid, slug, 1);
+async function fetchLastPost(tid, slug, postcount) {
+  // הערה קריטית (תוקן): לא ניתן לנחש את מספר העמוד האחרון לפי postcount בלבד -
+  // topic.postcount שמגיע מרשימות (recent/search) לעיתים undefined או לא מדויק,
+  // מה שגרם ל-estimatedLastPage לצאת תמיד 1 (Math.ceil((undefined||1)/20)=1) -
+  // כלומר בפועל תמיד הובא עמוד 1, ולכן הוקרא הפוסט הראשון במקום האחרון (הבאג
+  // שדווח בפועל). הפתרון: קודם מביאים עמוד 1 ושואבים משם את pagination.pageCount
+  // *האמיתי* שמחזיר ה-API עצמו (בדיוק כמו ש-topicFlow כבר עושה), ורק אם יש
+  // יותר מעמוד אחד מביאים בפועל את העמוד האחרון האמיתי.
+  const firstPageData = await fetchTopic(tid, slug, 1);
+  const realPageCount = firstPageData.pagination?.pageCount || 1;
 
-  const lastPage = firstPage.pagination?.pageCount || 1;
+  let posts = firstPageData.posts || [];
+  if (realPageCount > 1) {
+    const lastPageData = await fetchTopic(tid, slug, realPageCount);
+    if (lastPageData.posts && lastPageData.posts.length > 0) {
+      posts = lastPageData.posts;
+    }
+    // אם מסיבה כלשהי העמוד האחרון חזר ריק (edge case), נשארים עם posts
+    // מעמוד 1 שכבר הבאנו - עדיף מהודעה חסרה לגמרי.
+  }
 
-  // אם יש כמה עמודים מביאים את האחרון
-  const data = lastPage > 1
-    ? await fetchTopic(tid, slug, lastPage)
-    : firstPage;
-
-  const posts = data.posts || [];
-
-  return posts.length > 0
-    ? posts[posts.length - 1]
-    : null;
+  return posts.length > 0 ? posts[posts.length - 1] : null;
 }
 
 /** בונה מערך messages להקראת ההודעה האחרונה האמיתית של נושא (ר' fetchLastPost
@@ -448,7 +435,7 @@ async function fetchLastPost(tid, slug) {
 async function buildTeaserMessages(topic, index, total) {
   let lastPost = null;
   try {
-    lastPost = await fetchLastPost(topic.tid, topic.slug || '');
+    lastPost = await fetchLastPost(topic.tid, topic.slug || '', topic.postcount);
   } catch (err) {
     console.error('[buildTeaserMessages] שגיאה בשליפת ההודעה האחרונה', topic.tid, err.message);
   }
@@ -604,7 +591,7 @@ const VOICE_SEARCH_EXTENSION_NUMBER = '8'; // מספר תת-שלוחה קבוע 
 // הערה קריטית שאומתה בפועל מלוג ימות אמיתי: ימות עצמה מצרפת '/' + file_name
 // ל-path בעת השמירה. path עם '/' בסוף (כפי שהיה כאן קודם) גרם לנתיב כפול
 // "8//query.wav" בפועל (val_2 שהוחזר מהשרת) - ולכן path חייב להיות בלי '/' בסוף.
-const VOICE_SEARCH_RECORD_PATH = `/${VOICE_SEARCH_EXTENSION_NUMBER}`; // פורמט yemot-router2, בלי '/' בסוף
+const VOICE_SEARCH_RECORD_PATH = VOICE_SEARCH_EXTENSION_NUMBER; // פורמט yemot-router2, בלי '/' בסוף
 const VOICE_SEARCH_MGMT_PATH = `ivr2:/${VOICE_SEARCH_EXTENSION_NUMBER}`; // פורמט Management API
 const VOICE_SEARCH_RECORD_FILENAME = 'query'; // ללא סיומת, ר' תיעוד file_name ב-index.d.ts
 
@@ -661,7 +648,7 @@ async function voiceSearchFlow(call) {
   // המאזין פשוט מקליט ומקיש # ועוברים ישר לתמלול, לחוויה זורמת יותר בחיפוש.
   // append_to_existing_file=false (ברירת מחדל) - כל הקלטה חדשה דורסת את
   // הקודמת באותו שם קובץ, כך שאנחנו תמיד יודעים בוודאות את נתיב ההורדה.
-  await call.read([
+  const recordResult = await call.read([
     { type: 'text', data: 'חיפוש קולי בפורום', removeInvalidChars: true },
     { type: 'text', data: 'אנא אמרו את מה שתרצו לחפש לאחר הצליל, ובסיום הקישו סולמית', removeInvalidChars: true }
   ], 'record', {
@@ -675,78 +662,35 @@ async function voiceSearchFlow(call) {
 
   // שלב 2: הורדת ההקלטה מימות ושליחתה לתמלול. הריפוד בשקט לפני/אחרי ההקלטה
   // (כדי שהתמלול לא יחתוך חצאי מילים בתחילת/סוף) מתבצע בצד הפייתון, ר' תיעוד
-  // downloadRecording/transcribeRecording למעלה. הערה: נתיב ההורדה חייב
-  // להיות בפורמט ivr2: של Management API (שונה מ-VOICE_SEARCH_RECORD_PATH
-  // היחסי שמשמש את call.read עצמו), עם סיומת .wav מפורשת.
-let queryText;
-const recordingPath =
-  `${VOICE_SEARCH_MGMT_PATH}/${VOICE_SEARCH_RECORD_FILENAME}.wav`;
-
-let wavBuffer;
-
-try {
-  console.log('[voiceSearchFlow] מוריד הקלטה:', recordingPath);
-
-  wavBuffer = await downloadRecording(recordingPath);
-
-  console.log(
-    '[voiceSearchFlow] ההקלטה הורדה בהצלחה, גודל:',
-    wavBuffer.length,
-    'bytes'
-  );
-} catch (err) {
-  console.error(
-    '[voiceSearchFlow] שגיאה בהורדת ההקלטה:',
-    err.response?.status || err.message
-  );
-
-  if (err.response?.data) {
-    console.error(
-      '[voiceSearchFlow] DownloadFile response:',
-      Buffer.isBuffer(err.response.data)
-        ? err.response.data.toString()
-        : err.response.data
-    );
-  }
-
-  return call.id_list_message([
-    {
-      type: 'text',
-      data: 'לא ניתן היה להוריד את ההקלטה כרגע, אנא נסו שוב',
-      removeInvalidChars: true
+  // downloadRecording/transcribeRecording למעלה.
+  //
+  // הערה קריטית (תוקן): בעבר הנתיב נבנה כניחוש קבוע מתוך VOICE_SEARCH_MGMT_PATH
+  // ו-VOICE_SEARCH_RECORD_FILENAME. בפועל התברר מלוג אמיתי של ימות ש-call.read
+  // עם mode='record' מחזירה (val_2) את הנתיב *האמיתי* שבו ימות שמרה את הקובץ -
+  // ובמקרה שנבדק זה היה "8//query.wav" (עם // כפול) ולא "8/query.wav" כפי
+  // שהקוד ניחש, ולכן ההורדה נכשלה עם 404 (הקובץ נשמר, רק לא בנתיב שניחשנו).
+  // הפתרון: להשתמש בערך שימות עצמה מחזירה כמקור האמת היחיד לנתיב ההורדה,
+  // במקום לבנות אותו בניחוש - כך הקוד תמיד יתאים למקום שבו ימות שמרה בפועל,
+  // גם אם ההתנהגות הפנימית של שרשור path+file_name משתנה או שונה מהמצופה.
+  // recordResult תואם לפורמט היחסי (כמו val_2 הגולמי, למשל "8/query.wav" או
+  // "8//query.wav") - יש לנרמל '//' ל-'/' ולהמיר לפורמט ivr2: של Management API.
+  let queryText;
+  try {
+    if (!recordResult || typeof recordResult !== 'string') {
+      throw new Error(`call.read('record') לא החזיר נתיב קובץ תקין (קיבלנו: ${JSON.stringify(recordResult)})`);
     }
-  ], { prependToNextAction: true });
-}
-
-try {
-  console.log('[voiceSearchFlow] שולח הקלטה לתמלול');
-
-  queryText = await transcribeRecording(wavBuffer);
-
-  console.log('[voiceSearchFlow] תמלול התקבל:', queryText);
-} catch (err) {
-  console.error(
-    '[voiceSearchFlow] שגיאה בתמלול:',
-    err.response?.status || err.message
-  );
-
-  if (err.response?.data) {
-    console.error(
-      '[voiceSearchFlow] transcribe response:',
-      Buffer.isBuffer(err.response.data)
-        ? err.response.data.toString()
-        : err.response.data
-    );
+    // נרמול '//' כפול ל-'/' יחיד (התופעה שנצפתה בפועל בלוג), והסרת '/' מוביל
+    // אם קיים, לפני הרכבת הנתיב בפורמט ivr2: הנדרש ל-Management API.
+    const normalizedRelativePath = recordResult.replace(/\/{2,}/g, '/').replace(/^\/+/, '');
+    const recordingPath = `ivr2:/${normalizedRelativePath}`;
+    const wavBuffer = await downloadRecording(recordingPath);
+    queryText = await transcribeRecording(wavBuffer);
+  } catch (err) {
+    console.error('[voiceSearchFlow] שגיאת תמלול', err.message);
+    return call.id_list_message([
+      { type: 'text', data: 'לא ניתן היה לתמלל את ההקלטה כרגע, אנא נסו שוב', removeInvalidChars: true }
+    ], { prependToNextAction: true });
   }
-
-  return call.id_list_message([
-    {
-      type: 'text',
-      data: 'לא ניתן היה לתמלל את ההקלטה כרגע, אנא נסו שוב',
-      removeInvalidChars: true
-    }
-  ], { prependToNextAction: true });
-}
 
   if (!queryText) {
     return call.id_list_message([

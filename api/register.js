@@ -1,36 +1,44 @@
 /**
- * דף הרשמה - קישור מספר טלפון לחשבון בפורום "מתמחים טופ"
+ * דף הרשמה - קישור מספר טלפון לחשבון בפורום ("מתמחים טופ" או "freeivr")
  * ==========================================================
- * מטרה: לאפשר למשתמש קצה למלא טופס אינטרנטי קצר (מספר פלאפון + שם משתמש
- * וסיסמא בפורום mitmachim.top), ולשמור את השיוך הזה בזיכרון קבוע (Upstash
- * Redis, לפי REST API) - כדי ששלוחה 5 בשלוחת ה-IVR (api/yemot/index.js)
+ * מטרה: לאפשר למשתמש קצה למלא טופס אינטרנטי קצר (מספר פלאפון + בחירת
+ * הפורום + שם משתמש וסיסמא באותו פורום), ולשמור את השיוך הזה בזיכרון קבוע
+ * (Upstash Redis, לפי REST API) - כדי ששלוחה 5 בכל אחת מגרסאות ה-IVR
+ * (api/yemot/index.js עבור מתמחים טופ, api/freeivr/index.js עבור freeivr)
  * תוכל לזהות מתקשר לפי מספר הטלפון שלו (call.phone) ולהתחבר בשמו לפורום
- * כדי להקריא לו את ההתראות האישיות שלו.
+ * הרלוונטי כדי להקריא לו את ההתראות האישיות שלו.
+ *
+ * תמיכה בשני פורומים: אותו מספר טלפון יכול להירשם בנפרד לכל אחד משני
+ * הפורומים (בשתי פעולות שליחה נפרדות של הטופס) - הרשומות בעלות מפתחות
+ * נפרדים ב-Redis (ר' userStore.js, פרמטר system), כך שרישום לפורום אחד
+ * אינו דורס או משפיע על הרישום לפורום השני.
  *
  * ארכיטקטורה: קובץ Vercel Serverless Function עצמאי (Express app), בדיוק
- * כמו api/yemot/index.js - Vercel מריץ כל קובץ תחת api/ כפונקציה נפרדת.
- * הכתובת הציבורית תהיה: https://<דומיין-הפרויקט>/api/register
+ * כמו api/yemot/index.js ו-api/freeivr/index.js - Vercel מריץ כל קובץ תחת
+ * api/ כפונקציה נפרדת. הכתובת הציבורית תהיה: https://<דומיין-הפרויקט>/api/register
  *   GET  /api/register  -> מחזיר טופס HTML פשוט (ללא תלות חיצונית/CSS/JS
- *                          כבד - טופס אחד, נגיש, עובד גם ללא JavaScript).
- *   POST /api/register  -> מקבל phone+username+password (JSON או form),
- *                          מנרמל את מספר הטלפון, ושומר אותו כ-key ב-Redis.
+ *                          כבד - טופס אחד, נגיש, עובד גם ללא JavaScript),
+ *                          כולל בחירת הפורום (radio buttons).
+ *   POST /api/register  -> מקבל phone+system+username+password (JSON או
+ *                          form), מנרמל את מספר הטלפון, ושומר אותו כ-key
+ *                          ב-Redis תחת המפתח הספציפי לפורום שנבחר.
  *
  * אחסון: Upstash Redis REST API (לא דורש חבילת @upstash/redis - מספיק
  * HTTP client רגיל, בדיוק כמו axios שכבר משמש בפרויקט לקריאות לפורום).
  * משתני סביבה נדרשים (יש להגדיר ב-Vercel Project Settings -> Environment
- * Variables, ר' גם .env.example):
+ * Variables, ר' גם .env.example) - משותפים לשני הפורומים:
  *   UPSTASH_REDIS_REST_URL
  *   UPSTASH_REDIS_REST_TOKEN
  *
- * מפתח האחסון: `mitmachim:phone:<מספר מנורמל>` -> JSON string עם
+ * מפתח האחסון: `mitmachim:phone:<system>:<מספר מנורמל>` -> JSON string עם
  * { username, password, updatedAt }. הנרמול (normalizePhone) הוא קריטי:
  * חייב להתאים בדיוק לפורמט שבו ימות המשיח מעביר את call.phone בהמשך
- * (ר' תיעוד מפורט ליד normalizePhone למטה ובקובץ api/yemot/index.js
- * ליד notificationsFlow) - אחרת הזיהוי האוטומטי לפי מספר מתקשר ייכשל.
+ * (ר' תיעוד מפורט ב-userStore.js וב-notificationsFlow בכל אחת מגרסאות
+ * ה-IVR) - אחרת הזיהוי האוטומטי לפי מספר מתקשר ייכשל.
  *
  * אבטחה: הסיסמא לפורום נשמרת כפי שהיא (טקסט גלוי) ב-Redis, מכיוון שהיא
  * נדרשת בפועל כדי לבצע login אמיתי מול NodeBB בזמן השיחה (ר' loginAsUser
- * ב-api/yemot/index.js) - NodeBB עצמו לא חושף API להתחברות עם hash בלבד.
+ * בכל אחת מגרסאות ה-IVR) - NodeBB עצמו לא חושף API להתחברות עם hash בלבד.
  * יש להסביר זאת למשתמשים בטופס (ר' ההודעה בעמוד עצמו) ולוודא ש-Redis
  * עצמו מאובטח (Upstash כברירת מחדל דורש טוקן+TLS).
  */
@@ -43,6 +51,19 @@ const express = require('express');
 // בעת שליפת הפרטים לפי מספר המתקשר - ר' תיעוד מפורט ב-userStore.js.
 const { normalizePhone, saveUserCredentials } = require('./userStore');
 
+/** רשימת הפורומים הנתמכים: value = מזהה system (תואם ל-userStore.js
+ *  ולפרמטר FORUM_SYSTEM_ID/'mitmachim' בכל אחת מגרסאות ה-IVR), label = שם
+ *  תצוגה בעברית לטופס. הוספת פורום נתמך נוסף בעתיד דורשת רק הוספת ערך כאן
+ *  ("system") ויצירת קובץ api/<תיקייה חדשה>/index.js מקביל. */
+const SUPPORTED_SYSTEMS = [
+  { value: 'mitmachim', label: 'מתמחים טופ (mitmachim.top)' },
+  { value: 'freeivr', label: 'הגדרות מתקדמות - ימות המשיח (f2.freeivr.co.il)' }
+];
+
+function isValidSystem(system) {
+  return SUPPORTED_SYSTEMS.some((s) => s.value === system);
+}
+
 /** בורח (escape) HTML כדי למנוע XSS בהודעות שגיאה/הצלחה המוזרקות לטופס. */
 function escapeHtml(str) {
   return String(str)
@@ -53,8 +74,10 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
-/** בונה את עמוד ה-HTML של הטופס, עם הודעת סטטוס אופציונלית (הצלחה/שגיאה). */
-function renderPage({ status, message } = {}) {
+/** בונה את עמוד ה-HTML של הטופס, עם הודעת סטטוס אופציונלית (הצלחה/שגיאה)
+ *  ועם שימור הבחירה הקודמת של פורום/מספר טלפון/שם משתמש (כדי שהמשתמש לא
+ *  יצטרך למלא הכל מחדש רק כי שכח שדה אחד וקיבל שגיאת ולידציה). */
+function renderPage({ status, message, selectedSystem, phoneValue, usernameValue } = {}) {
   let banner = '';
   if (status === 'success') {
     banner = `<div class="banner success">${escapeHtml(message || 'הפרטים נשמרו בהצלחה!')}</div>`;
@@ -62,12 +85,19 @@ function renderPage({ status, message } = {}) {
     banner = `<div class="banner error">${escapeHtml(message || 'אירעה שגיאה, אנא נסו שוב.')}</div>`;
   }
 
+  const currentSystem = isValidSystem(selectedSystem) ? selectedSystem : SUPPORTED_SYSTEMS[0].value;
+  const systemOptionsHtml = SUPPORTED_SYSTEMS.map((s) => `
+      <label class="radio-option">
+        <input type="radio" name="system" value="${escapeHtml(s.value)}" ${s.value === currentSystem ? 'checked' : ''}>
+        <span>${escapeHtml(s.label)}</span>
+      </label>`).join('');
+
   return `<!DOCTYPE html>
 <html lang="he" dir="rtl">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>הרשמה להתראות קוליות - מתמחים טופ</title>
+<title>הרשמה להתראות קוליות - מתמחים טופ / freeivr</title>
 <style>
   :root {
     --bg: #f4f6f8;
@@ -118,6 +148,34 @@ function renderPage({ status, message } = {}) {
     margin-bottom: 6px;
     font-size: 14px;
   }
+  fieldset {
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    padding: 12px 14px 14px;
+    margin: 0 0 18px;
+  }
+  legend {
+    font-weight: 600;
+    font-size: 14px;
+    padding: 0 6px;
+  }
+  .radio-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 400;
+    font-size: 14.5px;
+    margin-bottom: 8px;
+    cursor: pointer;
+  }
+  .radio-option:last-child { margin-bottom: 0; }
+  .radio-option input[type="radio"] {
+    width: 17px;
+    height: 17px;
+    margin: 0;
+    flex-shrink: 0;
+    cursor: pointer;
+  }
   input[type="text"], input[type="tel"], input[type="password"] {
     width: 100%;
     padding: 11px 12px;
@@ -167,14 +225,19 @@ function renderPage({ status, message } = {}) {
 <body>
   <div class="card">
     <h1>הרשמה להתראות קוליות</h1>
-    <p class="subtitle">קשרו את מספר הפלאפון שלכם לחשבון שלכם בפורום "מתמחים טופ", כדי שתוכלו לשמוע את ההתראות האישיות שלכם בשלוחה 5 בטלפון.</p>
+    <p class="subtitle">קשרו את מספר הפלאפון שלכם לחשבון שלכם באחד הפורומים, כדי שתוכלו לשמוע את ההתראות האישיות שלכם בשלוחה 5 בטלפון. ניתן להירשם לשני הפורומים בנפרד (הגשה נפרדת לכל פורום).</p>
     ${banner}
     <form method="POST" action="/api/register">
+      <fieldset>
+        <legend>בחרו פורום</legend>
+        ${systemOptionsHtml}
+      </fieldset>
+
       <label for="phone">מספר פלאפון</label>
-      <input type="tel" id="phone" name="phone" placeholder="05XXXXXXXX" required>
+      <input type="tel" id="phone" name="phone" placeholder="05XXXXXXXX" value="${escapeHtml(phoneValue || '')}" required>
 
       <label for="username">שם משתמש בפורום</label>
-      <input type="text" id="username" name="username" placeholder="שם המשתמש שלכם בפורום" required>
+      <input type="text" id="username" name="username" placeholder="שם המשתמש שלכם בפורום" value="${escapeHtml(usernameValue || '')}" required>
 
       <label for="password">סיסמא בפורום</label>
       <input type="password" id="password" name="password" placeholder="הסיסמא שלכם בפורום" required>
@@ -182,9 +245,9 @@ function renderPage({ status, message } = {}) {
       <button type="submit">שמירה</button>
     </form>
     <div class="note">
-      הפרטים נשמרים אך ורק לצורך התחברות אוטומטית לפורום בעת שיחה משלוחה 5,
-      כדי להקריא לכם את ההתראות האישיות שלכם. ניתן לעדכן את הפרטים בכל עת
-      על ידי מילוי הטופס מחדש.
+      הפרטים נשמרים אך ורק לצורך התחברות אוטומטית לפורום שנבחר בעת שיחה
+      משלוחה 5, כדי להקריא לכם את ההתראות האישיות שלכם. ניתן לעדכן את
+      הפרטים בכל עת על ידי מילוי הטופס מחדש (לכל פורום בנפרד).
     </div>
   </div>
 </body>
@@ -201,23 +264,57 @@ app.get('/api/register', (_req, res) => {
 });
 
 app.post('/api/register', async (req, res) => {
-  const { phone, username, password } = req.body || {};
+  const { phone, system, username, password } = req.body || {};
 
-  if (!phone || !username || !password) {
-    return res.status(400).send(renderPage({ status: 'error', message: 'יש למלא את כל השדות: מספר פלאפון, שם משתמש וסיסמא.' }));
+  if (!phone || !system || !username || !password) {
+    return res.status(400).send(renderPage({
+      status: 'error',
+      message: 'יש למלא את כל השדות: בחירת פורום, מספר פלאפון, שם משתמש וסיסמא.',
+      selectedSystem: system,
+      phoneValue: phone,
+      usernameValue: username
+    }));
+  }
+
+  if (!isValidSystem(system)) {
+    return res.status(400).send(renderPage({
+      status: 'error',
+      message: 'הפורום שנבחר אינו תקין, אנא בחרו שוב.',
+      phoneValue: phone,
+      usernameValue: username
+    }));
   }
 
   const normalizedPhone = normalizePhone(phone);
   if (normalizedPhone.length < 9) {
-    return res.status(400).send(renderPage({ status: 'error', message: 'מספר הפלאפון שהוזן אינו תקין, אנא בדקו ונסו שוב.' }));
+    return res.status(400).send(renderPage({
+      status: 'error',
+      message: 'מספר הפלאפון שהוזן אינו תקין, אנא בדקו ונסו שוב.',
+      selectedSystem: system,
+      usernameValue: username
+    }));
   }
 
+  const systemLabel = SUPPORTED_SYSTEMS.find((s) => s.value === system)?.label || system;
+
   try {
-    await saveUserCredentials(phone, username, password);
-    return res.status(200).send(renderPage({ status: 'success', message: 'הפרטים נשמרו בהצלחה! כעת ניתן להתקשר ולהיכנס לשלוחה 5 לשמיעת ההתראות שלכם.' }));
+    await saveUserCredentials(phone, username, password, system);
+    return res.status(200).send(renderPage({
+      status: 'success',
+      message: `הפרטים נשמרו בהצלחה עבור ${systemLabel}! כעת ניתן להתקשר ולהיכנס לשלוחה 5 לשמיעת ההתראות שלכם.`,
+      selectedSystem: system,
+      phoneValue: phone,
+      usernameValue: username
+    }));
   } catch (err) {
     console.error('[register] שגיאה בשמירת פרטי משתמש', err.message);
-    return res.status(500).send(renderPage({ status: 'error', message: 'אירעה שגיאה בשמירת הפרטים, אנא נסו שוב מאוחר יותר.' }));
+    return res.status(500).send(renderPage({
+      status: 'error',
+      message: 'אירעה שגיאה בשמירת הפרטים, אנא נסו שוב מאוחר יותר.',
+      selectedSystem: system,
+      phoneValue: phone,
+      usernameValue: username
+    }));
   }
 });
 

@@ -4,6 +4,9 @@
     "api/yemot/index.js": {
       "maxDuration": 25
     },
+    "api/freeivr/index.js": {
+      "maxDuration": 25
+    },
     "api/transcribe.py": {
       "maxDuration": 20
     },

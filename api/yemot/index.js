@@ -595,26 +595,27 @@ async function recentTopicsFlow(call, page) {
 
 /* ---------- שלוחה 4: חיפוש קולי - הקלטה -> תמלול -> חיפוש בפורום ---------- */
 
-// תיקיית יעד קבועה לשמירת הקלטות החיפוש, כתת-שלוחה של השלוחה הראשית (ה-API
-// extension עצמה, path=1 בדוגמה - יש לוודא שזה אכן מספר השלוחה הראשית שלכם
-// בממשק הניהול של ימות). ensureRecordingFolder דואגת שהיא תיווצר אוטומטית
-// כ-type=playfile (השלוחה שמיועדת להחזיק קבצים להשמעה/הקלטה) אם עוד אינה
-// קיימת - ר' תיעוד UpdateExtension למעלה: "במידה והשלוחה לא קיימת, תיווצר".
-// הערה קריטית: path כאן הוא בפורמט היחסי של yemot-router2 (record read-type)
-// ולא בפורמט ivr2: של Management API - אלו שני מרחבי-שמות שונים
-// (ר' downloadRecording, ששם כן צריך את הפורמט ivr2:/...).
+// תיקיית יעד קבועה לשמירת הקלטות החיפוש, כתת-שלוחה של השלוחה הראשית.
+// ensureRecordingFolder דואגת שהיא תיווצר אוטומטית כ-type=playfile (השלוחה
+// שמיועדת להחזיק קבצים להשמעה/הקלטה) אם עוד אינה קיימת - ר' תיעוד
+// UpdateExtension: "במידה והשלוחה לא קיימת, תיווצר".
 //
-// לפי בקשה מפורשת: התיקייה לשמירת הקלטות היא תיקייה עם שם אנגלי (לא מספר
-// שלוחה) ישירות תחת השלוחה הראשית - בדומה לדפוס '/ApiRecords' שאומת בפרויקט
-// ייחוס אחר (path טקסטואלי עם '/' מוביל, המועבר ישירות לפרמטר path של
-// call.read(..., 'record', ...) ולפרמטר path של Management API עם prefix
-// 'ivr2:'). זה מחליף את תת-השלוחה הממוספרת '8' שהייתה בשימוש קודם.
-const VOICE_SEARCH_RECORDINGS_DIR = 'VoiceSearchRecordings'; // שם תיקייה באנגלית תחת השלוחה הראשית
+// הערה קריטית (תוקן): בניסיון קודם הוחלף מספר השלוחה הממוספר (8) בשם תיקייה
+// אנגלי חופשי ("VoiceSearchRecordings"), בהשראת פרויקט ייחוס אחר. זה היה שגוי
+// ולכן ההקלטה לא נשמרה בכלל: תיעוד UpdateExtension הרשמי של ימות מראה
+// שהפרמטר path הוא תמיד *מספר שלוחה* בעץ החיוג (למשל path=ivr2:1), ולא נתיב
+// טקסטואלי חופשי - זו שלוחה מבוססת ספרות בלבד, כמו כל שלוחה אחרת בימות.
+// ה-path בפרויקט הייחוס ("/ApiRecords") כנראה תלוי בהתנהגות ספציפית של
+// אותה מערכת ולא ניתן להעתיק אותו כמו שהוא. חוזרים לשלוחה ממוספרת - זו
+// הצורה התקינה היחידה שנתמכת בפועל בעץ השלוחות של ימות. את השם "באנגלית"
+// ניתן לתת רק כתיאור (title) של השלוחה בממשק הניהול, לא כחלק מה-path עצמו.
+const VOICE_SEARCH_EXTENSION_NUMBER = '8'; // מספר תת-שלוחה קבוע תחת השלוחה הראשית
+const VOICE_SEARCH_EXTENSION_TITLE = 'VoiceSearchRecordings'; // שם תיאורי באנגלית - מוצג בממשק הניהול של ימות בלבד, לא חלק מהנתיב
 // הערה קריטית שאומתה בפועל מלוג ימות אמיתי: ימות עצמה מצרפת '/' + file_name
 // ל-path בעת השמירה. path עם '/' בסוף גורם לנתיב כפול (למשל "...//query.wav")
 // - ולכן path חייב להיות בלי '/' בסוף.
-const VOICE_SEARCH_RECORD_PATH = VOICE_SEARCH_RECORDINGS_DIR; // פורמט yemot-router2, בלי '/' בסוף
-const VOICE_SEARCH_MGMT_PATH = `ivr2:/${VOICE_SEARCH_RECORDINGS_DIR}`; // פורמט Management API
+const VOICE_SEARCH_RECORD_PATH = VOICE_SEARCH_EXTENSION_NUMBER; // פורמט yemot-router2, בלי '/' בסוף
+const VOICE_SEARCH_MGMT_PATH = `ivr2:/${VOICE_SEARCH_EXTENSION_NUMBER}`; // פורמט Management API
 const VOICE_SEARCH_RECORD_FILENAME = 'query'; // ללא סיומת, ר' תיעוד file_name ב-index.d.ts
 
 let recordingFolderEnsured = false;
@@ -646,7 +647,7 @@ async function ensureRecordingFolder() {
       token,
       path: VOICE_SEARCH_MGMT_PATH,
       type: 'playfile',
-      title: 'הקלטות חיפוש קולי'
+      title: VOICE_SEARCH_EXTENSION_TITLE
     },
     timeout: 10000
   });

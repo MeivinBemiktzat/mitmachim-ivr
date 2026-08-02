@@ -37,7 +37,12 @@ const axios = require('axios');
  * ============================================================ */
 
 const FORUM_BASE = 'https://mitmachim.top';
-const SERVER_BASE = 'https://mitmachim-ivr.vercel.app';
+// כתובת השרת עצמו: ב-Vercel, VERCEL_URL מכיל את הדומיין האמיתי של הפריסה
+// הנוכחית (כולל פריסות preview, שיש להן דומיין ייחודי לכל פריסה) - אם לא
+// נשתמש בו ונשתמש בכתובת ה-production הקבועה בלבד, קריאה עצמית לשירות
+// התמלול (transcribeRecording) תיכשל בפריסות preview עם 404, כי הן רצות
+// תחת דומיין אחר לגמרי. SERVER_BASE הקבוע משמש רק כברירת מחדל למקומי.
+const SERVER_BASE = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'https://mitmachim-ivr.vercel.app';
 // שרת הניהול של ימות המשיח - דרכו מורידים קבצי הקלטה שנשמרו ע"י type='record'
 // (ר' תיעוד ליד downloadRecording/voiceSearchFlow). לא קשור לפורום mitmachim.top.
 const YEMOT_MANAGEMENT_BASE = 'https://www.call2all.co.il/ym/api';
@@ -310,19 +315,30 @@ async function fetchTopic(tid, slug, page = 1) {
  * לפרטי ההתחברות של הפורום). ר' גם .env.example (YEMOT_MANAGEMENT_TOKEN).
  */
 
-/** מוריד את קובץ ה-wav שנשמר בשלוחת ההקלטה (path קבוע, ר' voiceSearchFlow),
- *  דרך Management API של ימות. מחזיר Buffer של בייטי ה-wav הגולמיים. */
+/** מוריד את קובץ ה-wav שנשמר בתת-שלוחת ההקלטה (path בפורמט ivr2:/... של
+ *  Management API - ר' VOICE_SEARCH_MGMT_PATH ב-voiceSearchFlow). מחזיר
+ *  Buffer של בייטי ה-wav הגולמיים. הערה: לפי תיעוד DownloadFile הרשמי של
+ *  ימות, אם הקובץ לא קיים בנתיב המדויק - השרת מחזיר 404 (לא שגיאת JSON) -
+ *  לכן שגיאת 404 כאן פירושה כמעט תמיד שהנתיב/שם הקובץ לא תואם למה שימות
+ *  שמרה בפועל (ולא בעיית רשת/הרשאות). */
 async function downloadRecording(recordingPath) {
   const token = process.env.YEMOT_MANAGEMENT_TOKEN;
   if (!token) {
     throw new Error('YEMOT_MANAGEMENT_TOKEN לא מוגדר בסביבה - לא ניתן להוריד הקלטות');
   }
-  const { data } = await axios.get(`${YEMOT_MANAGEMENT_BASE}/DownloadFile`, {
-    params: { token, path: recordingPath },
-    responseType: 'arraybuffer',
-    timeout: 15000
-  });
-  return Buffer.from(data);
+  try {
+    const { data } = await axios.get(`${YEMOT_MANAGEMENT_BASE}/DownloadFile`, {
+      params: { token, path: recordingPath },
+      responseType: 'arraybuffer',
+      timeout: 15000
+    });
+    return Buffer.from(data);
+  } catch (err) {
+    if (err.response?.status === 404) {
+      throw new Error(`קובץ ההקלטה לא נמצא בנתיב ${recordingPath} - יתכן שההקלטה לא נשמרה או ששם הקובץ שונה`);
+    }
+    throw err;
+  }
 }
 
 /** שולח את בייטי ה-wav לפונקציית התמלול (Python, api/transcribe.py) ומחזיר
@@ -524,14 +540,72 @@ async function recentTopicsFlow(call, page) {
 
 /* ---------- שלוחה 4: חיפוש קולי - הקלטה -> תמלול -> חיפוש בפורום ---------- */
 
-// נתיב קבוע לשמירת הקלטות החיפוש בשרתי ימות (תיקייה זמנית ייעודית, לא תיקיית
-// שלוחה קיימת). קובץ נדרס בכל שיחה - אין צורך לשמור היסטוריית הקלטות חיפוש.
-const VOICE_SEARCH_RECORD_PATH = 'ivr2:/1/search-temp';
-const VOICE_SEARCH_RECORD_FILENAME = 'query';
+// תיקיית יעד קבועה לשמירת הקלטות החיפוש, כתת-שלוחה של השלוחה הראשית (ה-API
+// extension עצמה, path=1 בדוגמה - יש לוודא שזה אכן מספר השלוחה הראשית שלכם
+// בממשק הניהול של ימות). ensureRecordingFolder דואגת שהיא תיווצר אוטומטית
+// כ-type=playfile (השלוחה שמיועדת להחזיק קבצים להשמעה/הקלטה) אם עוד אינה
+// קיימת - ר' תיעוד UpdateExtension למעלה: "במידה והשלוחה לא קיימת, תיווצר".
+// הערה קריטית: path כאן הוא בפורמט היחסי של yemot-router2 (record read-type,
+// למשל '8/') ולא בפורמט ivr2: של Management API - אלו שני מרחבי-שמות שונים
+// (ר' downloadRecording, ששם כן צריך את הפורמט ivr2:/...).
+const VOICE_SEARCH_EXTENSION_NUMBER = '8'; // מספר תת-שלוחה קבוע תחת השלוחה הראשית
+const VOICE_SEARCH_RECORD_PATH = `${VOICE_SEARCH_EXTENSION_NUMBER}/`; // פורמט yemot-router2
+const VOICE_SEARCH_MGMT_PATH = `ivr2:/${VOICE_SEARCH_EXTENSION_NUMBER}`; // פורמט Management API
+const VOICE_SEARCH_RECORD_FILENAME = 'query'; // ללא סיומת, ר' תיעוד file_name ב-index.d.ts
+
+let recordingFolderEnsured = false;
+
+/** מוודאת שתת-השלוחה הייעודית לשמירת הקלטות החיפוש קיימת במערכת ימות, ואם לא -
+ *  יוצרת אותה כ-type=playfile (התתי-שלוחה המיועדת להחזיק קבצים). רצה פעם אחת
+ *  בלבד לכל cold start (תהליך Vercel), לא בכל שיחה - כדי לא להעמיס בקריאות API
+ *  מיותרות. משתמשת בטוקן ניהול נפרד (YEMOT_MANAGEMENT_TOKEN), לא בפרטי הפורום. */
+async function ensureRecordingFolder() {
+  if (recordingFolderEnsured) return;
+  const token = process.env.YEMOT_MANAGEMENT_TOKEN;
+  if (!token) {
+    throw new Error('YEMOT_MANAGEMENT_TOKEN לא מוגדר בסביבה - לא ניתן לוודא תיקיית הקלטות');
+  }
+
+  const { data: checkData } = await axios.get(`${YEMOT_MANAGEMENT_BASE}/CheckIfFolderExists`, {
+    params: { token, path: VOICE_SEARCH_MGMT_PATH },
+    timeout: 10000
+  });
+
+  if (checkData?.folderExists) {
+    recordingFolderEnsured = true;
+    return;
+  }
+
+  console.log(`[voiceSearch] תת-שלוחת ההקלטות ${VOICE_SEARCH_MGMT_PATH} אינה קיימת, יוצר אוטומטית`);
+  await axios.get(`${YEMOT_MANAGEMENT_BASE}/UpdateExtension`, {
+    params: {
+      token,
+      path: VOICE_SEARCH_MGMT_PATH,
+      type: 'playfile',
+      title: 'הקלטות חיפוש קולי'
+    },
+    timeout: 10000
+  });
+  recordingFolderEnsured = true;
+}
 
 async function voiceSearchFlow(call) {
+  // שלב 0: לוודא שתת-שלוחת ההקלטות קיימת (יוצרת אוטומטית אם לא, ר' תיעוד
+  // ensureRecordingFolder). אם זה נכשל (למשל טוקן שגוי), עדיף להיכשל כאן
+  // בבירור מאשר לקבל 404 מבלבל בהמשך בשלב ההורדה.
+  try {
+    await ensureRecordingFolder();
+  } catch (err) {
+    console.error('[voiceSearchFlow] שגיאה בוידוא תיקיית הקלטות', err.message);
+    return call.id_list_message([
+      { type: 'text', data: 'שירות החיפוש הקולי אינו זמין כרגע, אנא נסו שוב מאוחר יותר', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
   // שלב 1: הקלטת השאילתה. no_confirm_menu=true מדלג על "לאישור הקישו 2" -
   // המאזין פשוט מקליט ומקיש # ועוברים ישר לתמלול, לחוויה זורמת יותר בחיפוש.
+  // append_to_existing_file=false (ברירת מחדל) - כל הקלטה חדשה דורסת את
+  // הקודמת באותו שם קובץ, כך שאנחנו תמיד יודעים בוודאות את נתיב ההורדה.
   await call.read([
     { type: 'text', data: 'חיפוש קולי בפורום', removeInvalidChars: true },
     { type: 'text', data: 'אנא אמרו את מה שתרצו לחפש לאחר הצליל, ובסיום הקישו סולמית', removeInvalidChars: true }
@@ -539,16 +613,19 @@ async function voiceSearchFlow(call) {
     path: VOICE_SEARCH_RECORD_PATH,
     file_name: VOICE_SEARCH_RECORD_FILENAME,
     no_confirm_menu: true,
+    append_to_existing_file: false,
     min_length: 1,
     max_length: 20
   });
 
   // שלב 2: הורדת ההקלטה מימות ושליחתה לתמלול. הריפוד בשקט לפני/אחרי ההקלטה
   // (כדי שהתמלול לא יחתוך חצאי מילים בתחילת/סוף) מתבצע בצד הפייתון, ר' תיעוד
-  // downloadRecording/transcribeRecording למעלה.
+  // downloadRecording/transcribeRecording למעלה. הערה: נתיב ההורדה חייב
+  // להיות בפורמט ivr2: של Management API (שונה מ-VOICE_SEARCH_RECORD_PATH
+  // היחסי שמשמש את call.read עצמו), עם סיומת .wav מפורשת.
   let queryText;
   try {
-    const recordingPath = `${VOICE_SEARCH_RECORD_PATH}/${VOICE_SEARCH_RECORD_FILENAME}`;
+    const recordingPath = `${VOICE_SEARCH_MGMT_PATH}/${VOICE_SEARCH_RECORD_FILENAME}.wav`;
     const wavBuffer = await downloadRecording(recordingPath);
     queryText = await transcribeRecording(wavBuffer);
   } catch (err) {

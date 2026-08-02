@@ -681,8 +681,7 @@ async function voiceSearchFlow(call) {
   let queryText;
   try {
     const recordingPath =
-  `${VOICE_SEARCH_MGMT_PATH}/${VOICE_SEARCH_RECORD_FILENAME}.wav`
-    .replace('//', '/');
+  `${VOICE_SEARCH_MGMT_PATH}/${VOICE_SEARCH_RECORD_FILENAME}.wav`;
     const wavBuffer = await downloadRecording(recordingPath);
     queryText = await transcribeRecording(wavBuffer);
   } catch (err) {

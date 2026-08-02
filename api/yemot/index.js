@@ -396,15 +396,42 @@ function buildTopicHeaderMessages(topic) {
   return messages;
 }
 
-/** בונה מערך messages להקראת ה"פוסט האחרון" (teaser) של נושא - זו התגובה/הודעה
- *  העדכנית ביותר שנכתבה באותו נושא, כולל תוכנה המלא. שונה מ-buildTopicHeaderMessages
- *  שמקריא רק את כותרת הנושא ומטא-דאטה. */
-function buildTeaserMessages(topic, index, total) {
-  const teaser = topic.teaser || {};
-  const authorName = teaser.user?.displayname || teaser.user?.username || 'אנונימי';
-  const date = new Date(teaser.timestamp || topic.lastposttime || Date.now());
+/** מביא את ההודעה האחרונה האמיתית באשכול (topic), ישירות מ-API של הנושא -
+ *  ולא מהשדה topic.teaser. הערה קריטית שהתגלתה בפועל: topic.teaser ב-NodeBB
+ *  תלוי לגמרי בהגדרת ACP בפורום עצמו ("Teaser post: First" או "Last") - זו
+ *  הגדרה בצד השרת של הפורום שאין לנו שליטה עליה, ובפועל התברר שבפורום הזה
+ *  היא מוגדרת ל-First (מציגה את הפוסט הראשון, לא האחרון). לכן, כדי להבטיח
+ *  שרלוחה 1 תמיד תשמיע את הפוסט *האחרון* בפועל (ללא תלות בהגדרות הפורום),
+ *  יש להביא את עמוד ההודעות האחרון של הנושא ולקחת ממנו את ההודעה האחרונה -
+ *  באותה שיטה בדיוק ש-topicFlow כבר משתמשת בה לניווט בין עמודים (pageCount).
+ *  עלות: קריאת API נוספת אחת per topic ברשימה - מקובל לפי בקשת המשתמש. */
+async function fetchLastPost(tid, slug, postcount) {
+  // הערכת עמוד אחרון מתוך postcount (20 הודעות לעמוד, כפי שכבר ידוע לנו
+  // מ-topicFlow/pageCount) - חוסך בקשת "מידע כללי" נפרדת רק כדי לגלות pageCount.
+  const estimatedLastPage = Math.max(1, Math.ceil((postcount || 1) / 20));
+  const data = await fetchTopic(tid, slug, estimatedLastPage);
+  const posts = data.posts || [];
+  // הגנה: אם ההערכה שגויה (postcount לא מדויק) ו-fetchTopic החזיר עמוד ראשון
+  // בפועל בגלל page-clamping בצד השרת, עדיין ניקח את ההודעה האחרונה שהתקבלה -
+  // זו עדיין קרובה משמעותית יותר לאמת מ-topic.teaser הלא-אמין.
+  return posts.length > 0 ? posts[posts.length - 1] : null;
+}
+
+/** בונה מערך messages להקראת ההודעה האחרונה האמיתית של נושא (ר' fetchLastPost
+ *  לעיל, ולמה זה לא topic.teaser). שונה מ-buildTopicHeaderMessages שמקריא רק
+ *  את כותרת הנושא ומטא-דאטה, בלי תוכן הודעה בכלל. */
+async function buildTeaserMessages(topic, index, total) {
+  let lastPost = null;
+  try {
+    lastPost = await fetchLastPost(topic.tid, topic.slug || '', topic.postcount);
+  } catch (err) {
+    console.error('[buildTeaserMessages] שגיאה בשליפת ההודעה האחרונה', topic.tid, err.message);
+  }
+
+  const authorName = lastPost?.user?.displayname || lastPost?.user?.username || 'אנונימי';
+  const date = new Date(lastPost?.timestamp || topic.lastposttime || Date.now());
   const dateStr = `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}/${date.getFullYear()}`;
-  const content = sanitizeForSpeech(teaser.content);
+  const content = sanitizeForSpeech(lastPost?.content);
 
   return [
     { type: 'text', data: `פריט ${index + 1} מתוך ${total}`, removeInvalidChars: true },
@@ -549,7 +576,10 @@ async function recentTopicsFlow(call, page) {
 // למשל '8/') ולא בפורמט ivr2: של Management API - אלו שני מרחבי-שמות שונים
 // (ר' downloadRecording, ששם כן צריך את הפורמט ivr2:/...).
 const VOICE_SEARCH_EXTENSION_NUMBER = '8'; // מספר תת-שלוחה קבוע תחת השלוחה הראשית
-const VOICE_SEARCH_RECORD_PATH = `${VOICE_SEARCH_EXTENSION_NUMBER}/`; // פורמט yemot-router2
+// הערה קריטית שאומתה בפועל מלוג ימות אמיתי: ימות עצמה מצרפת '/' + file_name
+// ל-path בעת השמירה. path עם '/' בסוף (כפי שהיה כאן קודם) גרם לנתיב כפול
+// "8//query.wav" בפועל (val_2 שהוחזר מהשרת) - ולכן path חייב להיות בלי '/' בסוף.
+const VOICE_SEARCH_RECORD_PATH = VOICE_SEARCH_EXTENSION_NUMBER; // פורמט yemot-router2, בלי '/' בסוף
 const VOICE_SEARCH_MGMT_PATH = `ivr2:/${VOICE_SEARCH_EXTENSION_NUMBER}`; // פורמט Management API
 const VOICE_SEARCH_RECORD_FILENAME = 'query'; // ללא סיומת, ר' תיעוד file_name ב-index.d.ts
 
@@ -715,7 +745,7 @@ async function browseTopicList(call, topics, { onOpen, onNextPage, onPrevPage, c
   while (i < topics.length) {
     const topic = topics[i];
     const messages = [
-      ...buildFn(topic, i, topics.length),
+      ...(await buildFn(topic, i, topics.length)),
       { type: 'text', data: 'לפתיחה הקישו 1', removeInvalidChars: true },
       navHintMessage()
     ];

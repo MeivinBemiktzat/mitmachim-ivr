@@ -1284,7 +1284,7 @@ router.get('/', async (call) => {
   for (;;) {
     try {
       const choice = await call.read([
-        { type: 'text', data: 'ברוכים הבאים לפורום אוצריא הקולי', removeInvalidChars: true },
+        { type: 'text', data: 'ברוכים הבאים לפורום אוצַריֵא הקולי', removeInvalidChars: true },
         { type: 'text', data: 'להאזנה לפוסטים אחרונים הקישו 1', removeInvalidChars: true },
         { type: 'text', data: 'לנושאים אחרונים הקישו 2', removeInvalidChars: true },
         { type: 'text', data: 'לקטגוריות הקישו 3', removeInvalidChars: true },

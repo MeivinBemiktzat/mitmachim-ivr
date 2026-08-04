@@ -19,5 +19,5 @@
     "api/cron/check-notifications.js": {
       "maxDuration": 60
     }
-  },
+  }
 }

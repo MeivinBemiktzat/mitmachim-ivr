@@ -1436,4 +1436,12 @@ if (require.main === module) {
   app.listen(port, () => console.log(`מתמחים IVR פועל על פורט ${port}`));
 }
 
+// חשיפת loginAsUser/fetchUserNotifications כמאפיינים על אובייקט ה-app
+// המיוצא - כדי ש-api/cron/check-notifications.js יוכל לבצע login+שליפת
+// התראות עבור פורום זה בדיוק באותה לוגיקה שמשמשת את שלוחה 5 (notificationsFlow),
+// ללא כפילות קוד. לא משנה את ההתנהגות של app כ-handler של Express -
+// זו רק הוספת שדות על האובייקט (פונקציה/אובייקט ב-JS יכול לשאת מאפיינים נוספים).
+app.loginAsUser = loginAsUser;
+app.fetchUserNotifications = fetchUserNotifications;
+
 module.exports = app;

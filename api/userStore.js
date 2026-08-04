@@ -3,19 +3,20 @@
  * ==========================================================================
  * נטען מכמה מקומות:
  *   - api/register.js     (שמירה - הטופס הקולט מספר פלאפון + שם משתמש + סיסמא,
- *                          עבור אחד משני הפורומים הנתמכים - ר' פרמטר system)
+ *                          עבור אחד מהפורומים הנתמכים - ר' פרמטר system)
  *   - api/yemot/index.js   (שליפה - שלוחה 5 בגרסת פורום מתמחים טופ)
  *   - api/freeivr/index.js (שליפה - שלוחה 5 בגרסת פורום freeivr)
+ *   - api/otzaria/index.js (שליפה - שלוחה 5 בגרסת פורום אוצריא)
  * הופרד לקובץ נפרד כדי שהנרמול של מספר הטלפון (normalizePhone) יהיה זהה
  * ב-100% בין כל הצרכנים - אם ייכתבו מימושים נפרדים יש סיכון ממשי שהפורמט
  * ייסטה (למשל טיפול שונה בקידומת 972) והזיהוי האוטומטי בשיחה ייכשל כי
  * המפתח שנשמר לא יתאים למפתח שמחפשים.
  *
- * תמיכה בשני פורומים (system): אותו מספר טלפון עשוי להיות משויך לשני
- * חשבונות שונים לגמרי - אחד בפורום מתמחים טופ ואחד בפורום freeivr - לכן
- * מפתח ה-Redis כולל גם את זהות המערכת (system), לא רק את מספר הטלפון.
+ * תמיכה במספר פורומים (system): אותו מספר טלפון עשוי להיות משויך למספר
+ * חשבונות שונים לגמרי - אחד בכל פורום נתמך (מתמחים טופ / freeivr / אוצריא) -
+ * לכן מפתח ה-Redis כולל גם את זהות המערכת (system), לא רק את מספר הטלפון.
  * ערך ברירת המחדל של system הוא 'mitmachim' (שמירה על תאימות לאחור עם
- * רשומות שנשמרו לפני הוספת תמיכה ב-freeivr).
+ * רשומות שנשמרו לפני הוספת תמיכה בפורומים נוספים).
  *
  * אחסון: Upstash Redis REST API בלבד (ללא חבילת @upstash/redis) - קריאות
  * HTTP פשוטות עם axios, בהתאם לפורמט הרשמי: GET <URL>/<CMD>/<arg1>/<arg2>...
@@ -81,11 +82,24 @@ async function upstashCommand(...args) {
 
 /** שומר את פרטי ההתחברות של המשתמש בפורום, ממופים למספר הטלפון המנורמל
  *  ולזהות המערכת (system) - כדי שאותו מספר טלפון יוכל להחזיק בו-זמנית
- *  שיוך נפרד לכל אחד מהפורומים הנתמכים (מתמחים טופ / freeivr). */
+ *  שיוך נפרד לכל אחד מהפורומים הנתמכים (מתמחים טופ / freeivr / אוצריא).
+ *  הערה קריטית (תוקן): בעבר הקוד לא בדק בכלל את תוצאת פקודת ה-SET מול
+ *  Upstash - אם הפקודה נכשלה בצד Upstash מכל סיבה (auth זמני, timeout,
+ *  תגובת שגיאה כלשהי) הקוד עדיין החזיר "הצלחה" למשתמש בטופס ההרשמה,
+ *  והמשתמש היה משוכנע שהפרטים נשמרו כשבפועל הם מעולם לא נכתבו ל-Redis -
+ *  בדיוק התסמין של "הנתונים נעלמים" (הם בכלל לא נשמרו מלכתחילה). כעת
+ *  נבדק במפורש שהתגובה מ-Upstash היא 'OK' (זו תגובת ה-SET התקנית של
+ *  Redis), ואם לא - נזרקת שגיאה ברורה כדי ש-register.js יציג למשתמש
+ *  הודעת שגיאה אמיתית במקום הודעת הצלחה שגויה. */
 async function saveUserCredentials(phone, username, password, system) {
   const normalizedPhone = normalizePhone(phone);
   const value = JSON.stringify({ username, password, updatedAt: new Date().toISOString() });
-  await upstashCommand('SET', redisKey(normalizedPhone, system), value);
+  const result = await upstashCommand('SET', redisKey(normalizedPhone, system), value);
+  if (result !== 'OK') {
+    console.error('[userStore] SET לא אושר ע"י Upstash, תגובה בפועל:', JSON.stringify(result));
+    throw new Error('השמירה ב-Redis לא אושרה (Upstash לא החזיר OK) - הפרטים כנראה לא נשמרו בפועל');
+  }
+  console.log(`[userStore] נשמר בהצלחה מפתח: ${redisKey(normalizedPhone, system)}`);
   return normalizedPhone;
 }
 
@@ -97,8 +111,17 @@ async function saveUserCredentials(phone, username, password, system) {
 async function getUserCredentials(phone, system) {
   const normalizedPhone = normalizePhone(phone);
   if (!normalizedPhone) return null;
-  const raw = await upstashCommand('GET', redisKey(normalizedPhone, system));
-  if (!raw) return null;
+  const key = redisKey(normalizedPhone, system);
+  const raw = await upstashCommand('GET', key);
+  if (!raw) {
+    // לוג אבחוני קריטי: מציג בדיוק את המפתח שחיפשנו (כולל system מנורמל
+    // ומספר טלפון מנורמל) - כדי שבמקרה של "המשתמש טוען שהוא נרשם אבל
+    // המערכת לא מזהה אותו" ניתן יהיה להשוות ישירות מול Upstash Console
+    // (Data Browser -> חיפוש לפי אותו מפתח בדיוק) ולראות אם המפתח קיים
+    // שם עם ערך שונה, קיים תחת system אחר, או לא קיים כלל.
+    console.log(`[userStore] לא נמצא מפתח בעת חיפוש: ${key} (טלפון גולמי: ${phone})`);
+    return null;
+  }
   try {
     const parsed = JSON.parse(raw);
     if (!parsed?.username || !parsed?.password) return null;

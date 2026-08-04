@@ -50,7 +50,12 @@ const express = require('express');
 // נרמול מספר הטלפון ושמירת פרטי ההתחברות מוגדרים במודול משותף (userStore.js)
 // כדי להבטיח שהנרמול זהה בדיוק לזה שמשמש בשלוחה 5 (api/yemot/index.js)
 // בעת שליפת הפרטים לפי מספר המתקשר - ר' תיעוד מפורט ב-userStore.js.
-const { normalizePhone, saveUserCredentials } = require('./userStore');
+const {
+  normalizePhone,
+  saveUserCredentials,
+  subscribeToTzintuk,
+  unsubscribeFromTzintuk
+} = require('./userStore');
 
 /** רשימת הפורומים הנתמכים: value = מזהה system (תואם ל-userStore.js
  *  ולפרמטר FORUM_SYSTEM_ID/'mitmachim' בכל אחת מגרסאות ה-IVR), label = שם
@@ -79,7 +84,7 @@ function escapeHtml(str) {
 /** בונה את עמוד ה-HTML של הטופס, עם הודעת סטטוס אופציונלית (הצלחה/שגיאה)
  *  ועם שימור הבחירה הקודמת של פורום/מספר טלפון/שם משתמש (כדי שהמשתמש לא
  *  יצטרך למלא הכל מחדש רק כי שכח שדה אחד וקיבל שגיאת ולידציה). */
-function renderPage({ status, message, selectedSystem, phoneValue, usernameValue } = {}) {
+function renderPage({ status, message, selectedSystem, phoneValue, usernameValue, tzintukChecked } = {}) {
   let banner = '';
   if (status === 'success') {
     banner = `<div class="banner success">${escapeHtml(message || 'הפרטים נשמרו בהצלחה!')}</div>`;
@@ -178,6 +183,19 @@ function renderPage({ status, message, selectedSystem, phoneValue, usernameValue
     flex-shrink: 0;
     cursor: pointer;
   }
+  .checkbox-option {
+    align-items: flex-start;
+    margin: 0 0 18px;
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  .checkbox-option input[type="checkbox"] {
+    width: 17px;
+    height: 17px;
+    margin: 2px 0 0;
+    flex-shrink: 0;
+    cursor: pointer;
+  }
   input[type="text"], input[type="tel"], input[type="password"] {
     width: 100%;
     padding: 11px 12px;
@@ -244,6 +262,11 @@ function renderPage({ status, message, selectedSystem, phoneValue, usernameValue
       <label for="password">סיסמא בפורום</label>
       <input type="password" id="password" name="password" placeholder="הסיסמא שלכם בפורום" required>
 
+      <label class="radio-option checkbox-option">
+        <input type="checkbox" id="tzintuk" name="tzintuk" ${tzintukChecked ? 'checked' : ''}>
+        <span>קבל צינתוק טלפוני על התראה חדשה (שיחה קצרה שמצלצלת אליכם כשיש התראה חדשה בשלוחה 5)</span>
+      </label>
+
       <button type="submit">שמירה</button>
     </form>
     <div class="note">
@@ -266,7 +289,10 @@ app.get('/api/register', (_req, res) => {
 });
 
 app.post('/api/register', async (req, res) => {
-  const { phone, system, username, password } = req.body || {};
+  const { phone, system, username, password, tzintuk } = req.body || {};
+  // תיבת סימון HTML: קיימת בגוף הבקשה (כל ערך, בד"כ 'on') רק אם המשתמש סימן
+  // אותה - ולא קיימת כלל אם לא סומנה. לכן די בבדיקת אמיתות (truthy).
+  const tzintukChecked = !!tzintuk;
 
   if (!phone || !system || !username || !password) {
     return res.status(400).send(renderPage({
@@ -274,7 +300,8 @@ app.post('/api/register', async (req, res) => {
       message: 'יש למלא את כל השדות: בחירת פורום, מספר פלאפון, שם משתמש וסיסמא.',
       selectedSystem: system,
       phoneValue: phone,
-      usernameValue: username
+      usernameValue: username,
+      tzintukChecked
     }));
   }
 
@@ -283,7 +310,8 @@ app.post('/api/register', async (req, res) => {
       status: 'error',
       message: 'הפורום שנבחר אינו תקין, אנא בחרו שוב.',
       phoneValue: phone,
-      usernameValue: username
+      usernameValue: username,
+      tzintukChecked
     }));
   }
 
@@ -293,7 +321,8 @@ app.post('/api/register', async (req, res) => {
       status: 'error',
       message: 'מספר הפלאפון שהוזן אינו תקין, אנא בדקו ונסו שוב.',
       selectedSystem: system,
-      usernameValue: username
+      usernameValue: username,
+      tzintukChecked
     }));
   }
 
@@ -301,13 +330,6 @@ app.post('/api/register', async (req, res) => {
 
   try {
     await saveUserCredentials(phone, username, password, system);
-    return res.status(200).send(renderPage({
-      status: 'success',
-      message: `הפרטים נשמרו בהצלחה עבור ${systemLabel}! כעת ניתן להתקשר ולהיכנס לשלוחה 5 לשמיעת ההתראות שלכם.`,
-      selectedSystem: system,
-      phoneValue: phone,
-      usernameValue: username
-    }));
   } catch (err) {
     console.error('[register] שגיאה בשמירת פרטי משתמש', err.message);
     return res.status(500).send(renderPage({
@@ -315,9 +337,34 @@ app.post('/api/register', async (req, res) => {
       message: 'אירעה שגיאה בשמירת הפרטים, אנא נסו שוב מאוחר יותר.',
       selectedSystem: system,
       phoneValue: phone,
-      usernameValue: username
+      usernameValue: username,
+      tzintukChecked
     }));
   }
+
+  // עדכון ההרשמה לצינתוקים - כשל כאן לא אמור לבטל את שמירת פרטי ההתחברות
+  // שכבר הצליחה למעלה, לכן מטופל בנפרד עם הודעת אזהרה בלבד (לא מוצג כשגיאה
+  // חוסמת, כי הפעולה העיקרית של הטופס - שיוך הטלפון לפורום - כן הצליחה).
+  let tzintukWarning = '';
+  try {
+    if (tzintukChecked) {
+      await subscribeToTzintuk(phone, system);
+    } else {
+      await unsubscribeFromTzintuk(phone, system);
+    }
+  } catch (err) {
+    console.error('[register] שגיאה בעדכון הרשמה לצינתוקים', err.message);
+    tzintukWarning = ' (עדכון ההרשמה לצינתוקים נכשל, ניתן לשנות זאת בשלוחה 9 בטלפון)';
+  }
+
+  return res.status(200).send(renderPage({
+    status: 'success',
+    message: `הפרטים נשמרו בהצלחה עבור ${systemLabel}! כעת ניתן להתקשר ולהיכנס לשלוחה 5 לשמיעת ההתראות שלכם.${tzintukWarning}`,
+    selectedSystem: system,
+    phoneValue: phone,
+    usernameValue: username,
+    tzintukChecked
+  }));
 });
 
 if (require.main === module) {

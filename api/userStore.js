@@ -25,6 +25,18 @@
  * משתני סביבה נדרשים (זהים לכל הצרכנים, משותפים בין שני הפורומים):
  *   UPSTASH_REDIS_REST_URL
  *   UPSTASH_REDIS_REST_TOKEN
+ *
+ * הרשמה לצינתוקים (התראות טלפוניות): בנוסף לפרטי ההתחברות לפורום, מודול זה
+ * מנהל גם רשומת "הרשמה לצינתוקים" נפרדת לכל צירוף (phone, system) - נשמרת
+ * במפתח Redis נפרד (ר' tzintukKey למטה), כדי שהרשמה/הסרה מצינתוקים לא
+ * תדרוס ולא תהיה תלויה בפרטי ההתחברות לפורום (saveUserCredentials/
+ * getUserCredentials למעלה). הרשומה כוללת:
+ *   { enabled: true, since: <ISO date>, lastNotifiedAt: <ISO date | null> }
+ * since - הזמן שממנו מחשבים התראות כ"חדשות" (לפי בקשת המשתמש: "הזמן שממנו
+ *   אנחנו מחשבים התראות כחדשות הוא החל מהזמן שבו המשתמש נרשם לצינתוקים").
+ * lastNotifiedAt - הזמן (ISO) של ההתראה האחרונה שעבורה כבר נשלח צינתוק,
+ *   כדי שלא יישלח צינתוק פעמיים על אותה התראה - ר' תיעוד מפורט ב-
+ *   api/cron/check-notifications.js.
  */
 
 'use strict';
@@ -65,6 +77,18 @@ function normalizeSystem(system) {
 
 function redisKey(phone, system) {
   return `mitmachim:phone:${normalizeSystem(system)}:${phone}`;
+}
+
+/** מפתח נפרד לרשומת הרשמה לצינתוקים (עצמאי ממפתח פרטי ההתחברות למעלה) -
+ *  ר' תיעוד בראש הקובץ. */
+function tzintukKey(phone, system) {
+  return `mitmachim:tzintuk:${normalizeSystem(system)}:${phone}`;
+}
+
+/** מפתח עזר לסריקת SCAN (ר' listTzintukSubscribers) - תבנית עם כוכבית
+ *  שתואמת לכל מספרי הטלפון תחת מערכת (system) נתונה. */
+function tzintukScanPattern(system) {
+  return `mitmachim:tzintuk:${normalizeSystem(system)}:*`;
 }
 
 /** קריאת פקודת Redis בודדת מול Upstash REST API (GET לפי path segments). */
@@ -132,4 +156,166 @@ async function getUserCredentials(phone, system) {
   }
 }
 
-module.exports = { normalizePhone, saveUserCredentials, getUserCredentials };
+/**
+ * רושם מספר טלפון להתראות צינתוק עבור מערכת (system) נתונה. אם המשתמש כבר
+ * רשום - הפעולה אינה משנה את since הקיים (אינה "מאפסת" את נקודת ההתחלה של
+ * חישוב התראות חדשות) אלא רק מוודאת ש-enabled=true; זהו מצב אידמפוטנטי כדי
+ * שהקשה חוזרת בטעות על "הרשמה" (שלוחה 9->1) לא תזיז את since קדימה ותגרום
+ * להחמצת התראות שכבר נחשבו "חדשות" ביחס ל-since המקורי. הרשמה חדשה לגמרי
+ * (אין רשומה קודמת, או שהיא הייתה enabled=false) מקבלת since=עכשיו בדיוק -
+ * "הזמן שממנו אנחנו מחשבים התראות כחדשות הוא החל מהזמן שבו המשתמש נרשם".
+ * מחזיר את רשומת ההרשמה המעודכנת.
+ */
+async function subscribeToTzintuk(phone, system) {
+  const normalizedPhone = normalizePhone(phone);
+  if (!normalizedPhone) throw new Error('מספר טלפון לא תקין');
+  const key = tzintukKey(normalizedPhone, system);
+  const existing = await getTzintukSubscription(normalizedPhone, system);
+  if (existing?.enabled) {
+    // כבר רשום - לא נוגעים ב-since הקיים, מחזירים את הרשומה כפי שהיא.
+    return existing;
+  }
+  const record = {
+    enabled: true,
+    since: new Date().toISOString(),
+    lastNotifiedAt: null
+  };
+  const result = await upstashCommand('SET', key, JSON.stringify(record));
+  if (result !== 'OK') {
+    console.error('[userStore] SET (tzintuk subscribe) לא אושר ע"י Upstash, תגובה בפועל:', JSON.stringify(result));
+    throw new Error('הרשמה לצינתוקים נכשלה (Upstash לא החזיר OK)');
+  }
+  console.log(`[userStore] נרשם לצינתוקים: ${key}`);
+  return record;
+}
+
+/**
+ * מסיר מספר טלפון מהרשמה לצינתוקים עבור מערכת (system) נתונה. שומר את
+ * הרשומה עם enabled=false (ולא מוחק אותה לגמרי) כדי לשמר היסטוריה (since
+ * המקורי) למקרה שהמשתמש יירשם שוב בעתיד - אז ייפתח since חדש (ר'
+ * subscribeToTzintuk למעלה, שבודק enabled ולא רק קיום הרשומה).
+ */
+async function unsubscribeFromTzintuk(phone, system) {
+  const normalizedPhone = normalizePhone(phone);
+  if (!normalizedPhone) throw new Error('מספר טלפון לא תקין');
+  const key = tzintukKey(normalizedPhone, system);
+  const existing = await getTzintukSubscription(normalizedPhone, system);
+  const record = {
+    enabled: false,
+    since: existing?.since || new Date().toISOString(),
+    lastNotifiedAt: existing?.lastNotifiedAt || null
+  };
+  const result = await upstashCommand('SET', key, JSON.stringify(record));
+  if (result !== 'OK') {
+    console.error('[userStore] SET (tzintuk unsubscribe) לא אושר ע"י Upstash, תגובה בפועל:', JSON.stringify(result));
+    throw new Error('הסרה מצינתוקים נכשלה (Upstash לא החזיר OK)');
+  }
+  console.log(`[userStore] הוסר מצינתוקים: ${key}`);
+  return record;
+}
+
+/**
+ * שולף את רשומת ההרשמה לצינתוקים של מספר טלפון עבור מערכת נתונה, או null
+ * אם מעולם לא נרשם/הוסר. משמש גם את שלוחה 9->1 (הצגת מצב נוכחי למשתמש
+ * ותפריט הרשמה/הסרה דינמי) וגם את שלוחה 5 (בדיקת "יש X התראות חדשות").
+ */
+async function getTzintukSubscription(phone, system) {
+  const normalizedPhone = normalizePhone(phone);
+  if (!normalizedPhone) return null;
+  const key = tzintukKey(normalizedPhone, system);
+  const raw = await upstashCommand('GET', key);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.enabled !== 'boolean' || !parsed?.since) return null;
+    return {
+      enabled: parsed.enabled,
+      since: parsed.since,
+      lastNotifiedAt: parsed.lastNotifiedAt || null
+    };
+  } catch (err) {
+    console.error('[userStore] שגיאה בפענוח רשומת הרשמה לצינתוקים', err.message);
+    return null;
+  }
+}
+
+/** קיצור נוח: true אם המספר רשום כרגע (enabled=true) לצינתוקים במערכת הנתונה. */
+async function isSubscribedToTzintuk(phone, system) {
+  const sub = await getTzintukSubscription(phone, system);
+  return !!sub?.enabled;
+}
+
+/**
+ * מעדכן את lastNotifiedAt ברשומת ההרשמה לצינתוקים, לאחר ששלחנו בפועל צינתוק
+ * על התראה בזמן notifTimeIso נתון - כדי שלא יישלח צינתוק פעמיים על אותה
+ * התראה (ר' תיעוד מפורט ב-api/cron/check-notifications.js). לא נוגע ב-
+ * enabled/since הקיימים. אם אין רשומה קיימת (מצב לא אמור לקרות בזרימה
+ * הרגילה, כי הפונקציה נקראת רק על מנויים פעילים) - לא עושה כלום ומחזיר
+ * false, כדי לא "ליצור" רשומת הרשמה חדשה בטעות מתוך תהליך ה-cron.
+ */
+async function updateLastNotifiedTimestamp(phone, system, notifTimeIso) {
+  const normalizedPhone = normalizePhone(phone);
+  if (!normalizedPhone) return false;
+  const key = tzintukKey(normalizedPhone, system);
+  const existing = await getTzintukSubscription(normalizedPhone, system);
+  if (!existing) {
+    console.error(`[userStore] updateLastNotifiedTimestamp: אין רשומת הרשמה קיימת עבור ${key}`);
+    return false;
+  }
+  const record = { ...existing, lastNotifiedAt: notifTimeIso };
+  const result = await upstashCommand('SET', key, JSON.stringify(record));
+  if (result !== 'OK') {
+    console.error('[userStore] SET (updateLastNotifiedTimestamp) לא אושר ע"י Upstash, תגובה בפועל:', JSON.stringify(result));
+    return false;
+  }
+  return true;
+}
+
+/**
+ * סורק (SCAN, לא KEYS - בטוח יותר על Redis בפרודקשן) את כל רשומות ההרשמה
+ * לצינתוקים הפעילות (enabled=true) עבור מערכת (system) נתונה, ומחזיר מערך
+ * של { phone, since, lastNotifiedAt }. משמש את api/cron/check-notifications.js
+ * כדי לדעת אילו משתמשים לבדוק עבור התראות חדשות בכל הרצה. גודל הפרויקט קטן
+ * (משתמשים בודדים עד עשרות), כך שסריקה מלאה בכל הרצת cron היא זולה וסבירה -
+ * אין צורך באינדקס נפרד של "רשימת מנויים".
+ */
+async function listTzintukSubscribers(system) {
+  const pattern = tzintukScanPattern(system);
+  const results = [];
+  let cursor = '0';
+  do {
+    const scanResult = await upstashCommand('SCAN', cursor, 'MATCH', pattern, 'COUNT', '100');
+    if (!Array.isArray(scanResult) || scanResult.length < 2) break;
+    cursor = scanResult[0];
+    const keys = scanResult[1] || [];
+    for (const key of keys) {
+      const raw = await upstashCommand('GET', key);
+      if (!raw) continue;
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed?.enabled !== true || !parsed?.since) continue;
+        // חילוץ מספר הטלפון מתוך המפתח עצמו (הסיומת אחרי הקידומת הקבועה),
+        // ולא מתוך הערך - הערך לא כולל את מספר הטלפון בכוונה (ר' תיעוד למעלה).
+        const prefix = `mitmachim:tzintuk:${normalizeSystem(system)}:`;
+        const phone = key.startsWith(prefix) ? key.slice(prefix.length) : null;
+        if (!phone) continue;
+        results.push({ phone, since: parsed.since, lastNotifiedAt: parsed.lastNotifiedAt || null });
+      } catch (err) {
+        console.error('[userStore] שגיאה בפענוח רשומת מנוי בעת סריקה', key, err.message);
+      }
+    }
+  } while (cursor !== '0');
+  return results;
+}
+
+module.exports = {
+  normalizePhone,
+  saveUserCredentials,
+  getUserCredentials,
+  subscribeToTzintuk,
+  unsubscribeFromTzintuk,
+  getTzintukSubscription,
+  isSubscribedToTzintuk,
+  updateLastNotifiedTimestamp,
+  listTzintukSubscribers
+};

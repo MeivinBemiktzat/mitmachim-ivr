@@ -15,6 +15,15 @@
     },
     "api/register.js": {
       "maxDuration": 10
+    },
+    "api/cron/check-notifications.js": {
+      "maxDuration": 60
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/check-notifications",
+      "schedule": "*/5 * * * *"
+    }
+  ]
 }

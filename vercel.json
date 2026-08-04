@@ -20,10 +20,4 @@
       "maxDuration": 60
     }
   },
-  "crons": [
-    {
-      "path": "/api/cron/check-notifications",
-      "schedule": "*/5 * * * *"
-    }
-  ]
 }

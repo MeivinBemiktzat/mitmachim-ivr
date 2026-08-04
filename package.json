@@ -14,7 +14,8 @@
   "dependencies": {
     "express": "^4.19.2",
     "yemot-router2": "^6.2.1",
-    "axios": "^1.7.7"
+    "axios": "^1.7.7",
+    "@upstash/qstash": "^2.7.20"
   },
   "license": "MIT"
 }

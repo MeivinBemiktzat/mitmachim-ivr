@@ -4,14 +4,15 @@
  * מטרה: לאפשר למשתמש קצה למלא טופס אינטרנטי קצר (מספר פלאפון + בחירת
  * הפורום + שם משתמש וסיסמא באותו פורום), ולשמור את השיוך הזה בזיכרון קבוע
  * (Upstash Redis, לפי REST API) - כדי ששלוחה 5 בכל אחת מגרסאות ה-IVR
- * (api/yemot/index.js עבור מתמחים טופ, api/freeivr/index.js עבור freeivr)
- * תוכל לזהות מתקשר לפי מספר הטלפון שלו (call.phone) ולהתחבר בשמו לפורום
- * הרלוונטי כדי להקריא לו את ההתראות האישיות שלו.
+ * (api/yemot/index.js עבור מתמחים טופ, api/freeivr/index.js עבור freeivr,
+ * api/otzaria/index.js עבור פורום אוצריא) תוכל לזהות מתקשר לפי מספר הטלפון
+ * שלו (call.phone) ולהתחבר בשמו לפורום הרלוונטי כדי להקריא לו את ההתראות
+ * האישיות שלו.
  *
- * תמיכה בשני פורומים: אותו מספר טלפון יכול להירשם בנפרד לכל אחד משני
- * הפורומים (בשתי פעולות שליחה נפרדות של הטופס) - הרשומות בעלות מפתחות
- * נפרדים ב-Redis (ר' userStore.js, פרמטר system), כך שרישום לפורום אחד
- * אינו דורס או משפיע על הרישום לפורום השני.
+ * תמיכה במספר פורומים: אותו מספר טלפון יכול להירשם בנפרד לכל אחד
+ * מהפורומים הנתמכים (בפעולות שליחה נפרדות של הטופס, אחת לכל פורום) -
+ * הרשומות בעלות מפתחות נפרדים ב-Redis (ר' userStore.js, פרמטר system),
+ * כך שרישום לפורום אחד אינו דורס או משפיע על הרישום לפורום אחר.
  *
  * ארכיטקטורה: קובץ Vercel Serverless Function עצמאי (Express app), בדיוק
  * כמו api/yemot/index.js ו-api/freeivr/index.js - Vercel מריץ כל קובץ תחת
@@ -26,7 +27,7 @@
  * אחסון: Upstash Redis REST API (לא דורש חבילת @upstash/redis - מספיק
  * HTTP client רגיל, בדיוק כמו axios שכבר משמש בפרויקט לקריאות לפורום).
  * משתני סביבה נדרשים (יש להגדיר ב-Vercel Project Settings -> Environment
- * Variables, ר' גם .env.example) - משותפים לשני הפורומים:
+ * Variables, ר' גם .env.example) - משותפים לכל הפורומים הנתמכים:
  *   UPSTASH_REDIS_REST_URL
  *   UPSTASH_REDIS_REST_TOKEN
  *
@@ -57,7 +58,8 @@ const { normalizePhone, saveUserCredentials } = require('./userStore');
  *  ("system") ויצירת קובץ api/<תיקייה חדשה>/index.js מקביל. */
 const SUPPORTED_SYSTEMS = [
   { value: 'mitmachim', label: 'מתמחים טופ (mitmachim.top)' },
-  { value: 'freeivr', label: 'הגדרות מתקדמות - ימות המשיח (f2.freeivr.co.il)' }
+  { value: 'freeivr', label: 'הגדרות מתקדמות - ימות המשיח (f2.freeivr.co.il)' },
+  { value: 'otzaria', label: 'פורום אוצריא (otzaria.org/forum)' }
 ];
 
 function isValidSystem(system) {
@@ -97,7 +99,7 @@ function renderPage({ status, message, selectedSystem, phoneValue, usernameValue
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>הרשמה להתראות קוליות - מתמחים טופ / freeivr</title>
+<title>הרשמה להתראות קוליות - מתמחים טופ / freeivr / אוצריא</title>
 <style>
   :root {
     --bg: #f4f6f8;
@@ -225,7 +227,7 @@ function renderPage({ status, message, selectedSystem, phoneValue, usernameValue
 <body>
   <div class="card">
     <h1>הרשמה להתראות קוליות</h1>
-    <p class="subtitle">קשרו את מספר הפלאפון שלכם לחשבון שלכם באחד הפורומים, כדי שתוכלו לשמוע את ההתראות האישיות שלכם בשלוחה 5 בטלפון. ניתן להירשם לשני הפורומים בנפרד (הגשה נפרדת לכל פורום).</p>
+    <p class="subtitle">קשרו את מספר הפלאפון שלכם לחשבון שלכם באחד הפורומים, כדי שתוכלו לשמוע את ההתראות האישיות שלכם בשלוחה 5 בטלפון. ניתן להירשם למספר פורומים בנפרד (הגשה נפרדת לכל פורום).</p>
     ${banner}
     <form method="POST" action="/api/register">
       <fieldset>

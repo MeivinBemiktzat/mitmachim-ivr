@@ -20,9 +20,11 @@
  * תפריט ראשי נוכחי: 1=פוסטים אחרונים, 2=נושאים אחרונים, 3=קטגוריות,
  * 4=חיפוש קולי (הקלטה -> תמלול -> חיפוש בפורום, ר' voiceSearchFlow),
  * 5=התראות אישיות (זיהוי לפי מספר הטלפון המתקשר, ר' notificationsFlow
- * ו-api/userStore.js + api/register.js), 6=עזרה.
- * שלוחות 0/8/9 (חזרה למיקום אחרון, הגדרות, מנהל) הוסרו במלואן מהקוד, כולל
- * שמירת מיקום ב-Vercel Blob וה-cache בזיכרון.
+ * ו-api/userStore.js + api/register.js), 6=עזרה, 9=הגדרות אישיות (כרגע:
+ * הרשמה/הסרה מצינתוקים על התראות חדשות - ר' settingsFlow/tzintukSettingsFlow
+ * ו-api/tzintukSender.js + api/cron/check-notifications.js).
+ * שלוחות 0/8 (חזרה למיקום אחרון, מנהל) הוסרו במלואן מהקוד, כולל שמירת מיקום
+ * ב-Vercel Blob וה-cache בזיכרון.
  *
  * הערה: מוזיקת רקע (music_on_hold) אינה מנוהלת בקוד זה בכלל -
  * היא מוגדרת ומופעלת ברמת השלוחה בממשק ניהול ימות המשיח בלבד.
@@ -36,7 +38,12 @@ const axios = require('axios');
 // שלוחה 5 (התראות אישיות): שליפת שיוך מספר-טלפון -> פרטי התחברות בפורום,
 // שנשמר מראש דרך אתר ההרשמה (api/register.js). ר' תיעוד מפורט ב-userStore.js
 // ובפונקציה notificationsFlow למטה.
-const { getUserCredentials } = require('../userStore');
+const {
+  getUserCredentials,
+  subscribeToTzintuk,
+  unsubscribeFromTzintuk,
+  getTzintukSubscription
+} = require('../userStore');
 
 /* ============================================================
  * 1. תשתית כללית
@@ -713,6 +720,86 @@ async function recentTopicsFlow(call, page) {
  * נפרד (topic/post) לפתוח בפועל - ההתראה היא כבר התוכן המלא הרלוונטי
  * להשמעה. לכן "לפתיחה הקישו 1" מדלג פשוט להתראה הבאה (התנהגות זהה ל-9),
  * כדי לשמור על עקביות מלאה עם המבנה של browseTopicList ללא כפילות קוד. */
+/* ---------- שלוחה 9: הגדרות אישיות ----------
+ * תפריט קצר: 1 = הרשמה/הסרה מצינתוקים (התראות טלפוניות) על התראות חדשות
+ * בשלוחה 5. דורש קודם שיוך מספר טלפון->פרטי התחברות (כמו שלוחה 5 עצמה) -
+ * אם המספר לא רשום לפורום כלל, מכוונים אותו לאתר ההרשמה במקום להציג
+ * תפריט הרשמה לצינתוקים חסר משמעות (אין למי לצנתק בלי number->credentials). */
+async function settingsFlow(call) {
+  const choice = await call.read([
+    { type: 'text', data: 'הגדרות אישיות', removeInvalidChars: true },
+    { type: 'text', data: 'להרשמה או הסרה מצינתוקים על התראות חדשות הקישו 1', removeInvalidChars: true },
+    { type: 'text', data: 'לחזרה לתפריט הראשי הקישו כוכבית', removeInvalidChars: true }
+  ], 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
+
+  if (choice === '1') return tzintukSettingsFlow(call);
+  throw new GoToMainMenu();
+}
+
+/** שלוחה 9->1: הרשמה/הסרה מצינתוקים. מציג את המצב הנוכחי ומאפשר להחליף אותו
+ *  בהקשה אחת (1 = פעולה הפוכה למצב הנוכחי). ר' תיעוד מפורט ב-userStore.js
+ *  (subscribeToTzintuk/unsubscribeFromTzintuk) לגבי משמעות since וההתנהגות
+ *  האידמפוטנטית של הרשמה חוזרת. */
+async function tzintukSettingsFlow(call) {
+  let creds;
+  try {
+    creds = await getUserCredentials(call.phone, 'mitmachim');
+  } catch (err) {
+    console.error('[tzintukSettingsFlow] שגיאה בשליפת פרטי משתמש', err.message);
+    return call.id_list_message([
+      { type: 'text', data: 'שירות ההגדרות אינו זמין כרגע, אנא נסו שוב מאוחר יותר', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  if (!creds) {
+    return call.id_list_message([
+      { type: 'text', data: 'מספר הטלפון שלכם אינו רשום עדיין לפורום', removeInvalidChars: true },
+      { type: 'text', data: 'כדי להירשם, אנא היכנסו לאתר ההרשמה ומלאו את הפרטים שלכם בפורום', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  let sub;
+  try {
+    sub = await getTzintukSubscription(call.phone, 'mitmachim');
+  } catch (err) {
+    console.error('[tzintukSettingsFlow] שגיאה בשליפת מצב הרשמה', err.message);
+    return call.id_list_message([
+      { type: 'text', data: 'שירות ההגדרות אינו זמין כרגע, אנא נסו שוב מאוחר יותר', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  const isSubscribed = !!sub?.enabled;
+
+  const choice = await call.read([
+    { type: 'text', data: isSubscribed ? 'אתם רשומים כרגע לצינתוקים על התראות חדשות' : 'אינכם רשומים כרגע לצינתוקים על התראות חדשות', removeInvalidChars: true },
+    { type: 'text', data: isSubscribed ? 'להסרה מצינתוקים הקישו 1' : 'להרשמה לצינתוקים הקישו 1', removeInvalidChars: true },
+    { type: 'text', data: 'לחזרה לתפריט הראשי הקישו כוכבית', removeInvalidChars: true }
+  ], 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
+
+  if (choice !== '1') throw new GoToMainMenu();
+
+  try {
+    if (isSubscribed) {
+      await unsubscribeFromTzintuk(call.phone, 'mitmachim');
+      await call.id_list_message([
+        { type: 'text', data: 'הוסרתם בהצלחה מצינתוקים על התראות חדשות', removeInvalidChars: true }
+      ], { prependToNextAction: true });
+    } else {
+      await subscribeToTzintuk(call.phone, 'mitmachim');
+      await call.id_list_message([
+        { type: 'text', data: 'נרשמתם בהצלחה לצינתוקים על התראות חדשות', removeInvalidChars: true }
+      ], { prependToNextAction: true });
+    }
+  } catch (err) {
+    console.error('[tzintukSettingsFlow] שגיאה בעדכון הרשמה לצינתוקים', err.message);
+    return call.id_list_message([
+      { type: 'text', data: 'אירעה שגיאה בעדכון ההרשמה, אנא נסו שוב מאוחר יותר', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  throw new GoToMainMenu();
+}
+
 async function notificationsFlow(call) {
   let creds;
   try {
@@ -752,6 +839,33 @@ async function notificationsFlow(call) {
   }
 
   const notifications = data?.notifications || [];
+
+  // הכרזת "יש לך X התראות חדשות בשלוחה 5" - נספרות רק התראות שנוצרו אחרי
+  // מועד ההרשמה לצינתוקים (since) של המשתמש, כדי שההכרזה תתאם בדיוק את מה
+  // שנחשב "חדש" גם לצורך שליחת הצינתוק עצמו (ר' api/cron/check-notifications.js).
+  // אם המשתמש כלל לא רשום לצינתוקים - לא מכריזים כלום (ההתנהגות המקורית
+  // של השלוחה נשמרת ללא שינוי במקרה הזה).
+  try {
+    const sub = await getTzintukSubscription(call.phone, 'mitmachim');
+    if (sub?.enabled) {
+      const sinceTime = new Date(sub.since).getTime();
+      const newCount = notifications.filter((n) => {
+        const t = new Date(n.datetimeISO || n.datetime || 0).getTime();
+        return !isNaN(t) && t > sinceTime;
+      }).length;
+      if (newCount > 0) {
+        await call.id_list_message([
+          { type: 'text', data: `יש לך`, removeInvalidChars: true },
+          { type: 'number', data: String(newCount) },
+          { type: 'text', data: 'התראות חדשות בשלוחה 5', removeInvalidChars: true }
+        ], { prependToNextAction: true });
+      }
+    }
+  } catch (err) {
+    // כשל בהכרזה על ההתראות החדשות לא אמור לחסום את שמיעת ההתראות עצמן.
+    console.error('[notificationsFlow] שגיאה בבדיקת מונה התראות חדשות', err.message);
+  }
+
   if (notifications.length === 0) {
     return call.id_list_message([
       { type: 'text', data: 'אין לכם כרגע התראות חדשות בפורום', removeInvalidChars: true }
@@ -1266,7 +1380,8 @@ router.get('/', async (call) => {
         { type: 'text', data: 'לקטגוריות הקישו 3', removeInvalidChars: true },
         { type: 'text', data: 'לחיפוש קולי בפורום הקישו 4', removeInvalidChars: true },
         { type: 'text', data: 'להתראות אישיות הקישו 5', removeInvalidChars: true },
-        { type: 'text', data: 'לעזרה הקישו 6', removeInvalidChars: true }
+        { type: 'text', data: 'לעזרה הקישו 6', removeInvalidChars: true },
+        { type: 'text', data: 'להגדרות אישיות הקישו 9', removeInvalidChars: true }
       ], 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
 
       console.log(`[MAIN] נבחר: ${choice}`);
@@ -1278,6 +1393,7 @@ router.get('/', async (call) => {
         case '4': await voiceSearchFlow(call); break;
         case '5': await notificationsFlow(call); break;
         case '6': await helpFlow(call); break;
+        case '9': await settingsFlow(call); break;
         default: break; // הקשה לא מוכרת - חוזר לתפריט הראשי
       }
     } catch (err) {

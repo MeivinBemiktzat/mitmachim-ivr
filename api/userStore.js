@@ -31,12 +31,28 @@
  * במפתח Redis נפרד (ר' tzintukKey למטה), כדי שהרשמה/הסרה מצינתוקים לא
  * תדרוס ולא תהיה תלויה בפרטי ההתחברות לפורום (saveUserCredentials/
  * getUserCredentials למעלה). הרשומה כוללת:
- *   { enabled: true, since: <ISO date>, lastNotifiedAt: <ISO date | null> }
+ *   {
+ *     enabled: true,
+ *     since: <ISO date>,
+ *     lastNotifiedAt: <ISO date | null>,
+ *     tzintukListId: <string | null>,
+ *     listJoined: <boolean>
+ *   }
  * since - הזמן שממנו מחשבים התראות כ"חדשות" (לפי בקשת המשתמש: "הזמן שממנו
  *   אנחנו מחשבים התראות כחדשות הוא החל מהזמן שבו המשתמש נרשם לצינתוקים").
  * lastNotifiedAt - הזמן (ISO) של ההתראה האחרונה שעבורה כבר נשלח צינתוק,
  *   כדי שלא יישלח צינתוק פעמיים על אותה התראה - ר' תיעוד מפורט ב-
  *   api/cron/check-notifications.js.
+ * tzintukListId - מזהה רשימת הצינתוק האישית (tzl:) של המשתמש, כפי שנוצרה
+ *   ע"י api/tzintukListManager.js (ensureTzintukExtension). המערכת עברה
+ *   ממנגנון צינתוק ad-hoc למספר טלפון בודד למנגנון הרשמי של רשימות צינתוק
+ *   חינמיות - ר' תיעוד מפורט ב-api/tzintukListManager.js וב-
+ *   api/tzintukSender.js. null אצל מנוי שטרם הושלמה עבורו יצירת השלוחה
+ *   האישית (למשל מנוי ישן מלפני השינוי - ר' getOrCreateTzintukListId למטה).
+ * listJoined - true רק לאחר שהמשתמש ביצע בפועל את אישור ההצטרפות הטלפוני
+ *   החד-פעמי לרשימה שלו (אין דרך API להוסיף אותו לרשימה מרחוק - ר' תיעוד
+ *   ב-tzintukListManager.js). כל עוד false, אין טעם להפעיל RunTzintuk עבור
+ *   הרשימה הזו (לא יגיע לאף אחד) - ר' cron/check-notifications.js.
  */
 
 'use strict';
@@ -165,6 +181,12 @@ async function getUserCredentials(phone, system) {
  * (אין רשומה קודמת, או שהיא הייתה enabled=false) מקבלת since=עכשיו בדיוק -
  * "הזמן שממנו אנחנו מחשבים התראות כחדשות הוא החל מהזמן שבו המשתמש נרשם".
  * מחזיר את רשומת ההרשמה המעודכנת.
+ *
+ * הערה: פונקציה זו אינה יוצרת/מוודאת כאן את שלוחת הצינתוק האישית (tzl:) -
+ * זו אחריות של getOrCreateTzintukListId (קורא ל-tzintukListManager.js,
+ * שמבצע קריאות רשת ל-Management API). subscribeToTzintuk עצמה נשארת
+ * פעולת Redis בלבד, כמו שהייתה - כך שקריאה מ-register.js (טופס אתר,
+ * ללא אינטראקציית טלפון) לא נכשלת/נתקעת רק בגלל תלות ברשת ימות.
  */
 async function subscribeToTzintuk(phone, system) {
   const normalizedPhone = normalizePhone(phone);
@@ -178,7 +200,12 @@ async function subscribeToTzintuk(phone, system) {
   const record = {
     enabled: true,
     since: new Date().toISOString(),
-    lastNotifiedAt: null
+    lastNotifiedAt: null,
+    // תאימות לאחור: אם הייתה רשומה קודמת (enabled=false) עם tzintukListId/
+    // listJoined משויכים כבר (למשל המשתמש ביטל ואז נרשם שוב) - משמרים אותם,
+    // כדי לא לאבד שלוחה/הצטרפות שכבר קיימות בפועל בממשק ימות.
+    tzintukListId: existing?.tzintukListId || null,
+    listJoined: existing?.listJoined || false
   };
   const result = await upstashCommand('SET', key, JSON.stringify(record));
   if (result !== 'OK') {
@@ -187,6 +214,56 @@ async function subscribeToTzintuk(phone, system) {
   }
   console.log(`[userStore] נרשם לצינתוקים: ${key}`);
   return record;
+}
+
+/**
+ * מעדכן ברשומת ההרשמה הקיימת של המשתמש את tzintukListId (וזאת בלבד) -
+ * נקראת ע"י getOrCreateTzintukListId לאחר שנוצרה בהצלחה השלוחה האישית
+ * בממשק ימות (tzintukListManager.ensureTzintukExtension). לא נוגעת ב-
+ * enabled/since/lastNotifiedAt/listJoined הקיימים.
+ */
+async function setTzintukListId(phone, system, listId) {
+  const normalizedPhone = normalizePhone(phone);
+  if (!normalizedPhone) throw new Error('מספר טלפון לא תקין');
+  const key = tzintukKey(normalizedPhone, system);
+  const existing = await getTzintukSubscription(normalizedPhone, system);
+  if (!existing) {
+    console.error(`[userStore] setTzintukListId: אין רשומת הרשמה קיימת עבור ${key}`);
+    return false;
+  }
+  const record = { ...existing, tzintukListId: listId };
+  const result = await upstashCommand('SET', key, JSON.stringify(record));
+  if (result !== 'OK') {
+    console.error('[userStore] SET (setTzintukListId) לא אושר ע"י Upstash, תגובה בפועל:', JSON.stringify(result));
+    return false;
+  }
+  return true;
+}
+
+/**
+ * מסמן שהמשתמש ביצע בפועל את אישור ההצטרפות הטלפוני החד-פעמי לרשימת
+ * הצינתוק האישית שלו (listJoined=true) - ר' תיעוד מפורט ב-
+ * tzintukListManager.js לגבי הסיבה שאין דרך API לבצע זאת מרחוק. נקראת רק
+ * לאחר שהמשתמש עצמו חייג לשלוחה האישית שלו ואישר (ר' tzintukSettingsFlow
+ * בכל אחד מקבצי ה-IVR) - זהו סימון "אני יודע שהוא בטח הצטרף", לא אימות
+ * אמיתי מול ימות (אין API לכך), ולכן הוא רק best-effort.
+ */
+async function markTzintukListJoined(phone, system) {
+  const normalizedPhone = normalizePhone(phone);
+  if (!normalizedPhone) throw new Error('מספר טלפון לא תקין');
+  const key = tzintukKey(normalizedPhone, system);
+  const existing = await getTzintukSubscription(normalizedPhone, system);
+  if (!existing) {
+    console.error(`[userStore] markTzintukListJoined: אין רשומת הרשמה קיימת עבור ${key}`);
+    return false;
+  }
+  const record = { ...existing, listJoined: true };
+  const result = await upstashCommand('SET', key, JSON.stringify(record));
+  if (result !== 'OK') {
+    console.error('[userStore] SET (markTzintukListJoined) לא אושר ע"י Upstash, תגובה בפועל:', JSON.stringify(result));
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -203,7 +280,14 @@ async function unsubscribeFromTzintuk(phone, system) {
   const record = {
     enabled: false,
     since: existing?.since || new Date().toISOString(),
-    lastNotifiedAt: existing?.lastNotifiedAt || null
+    lastNotifiedAt: existing?.lastNotifiedAt || null,
+    // tzintukListId נשמר (לא מנוקה) - השלוחה עצמה נשארת קיימת בממשק ימות,
+    // ורק הרשימה מאופסת בפועל מול ה-API (ר' resetTzintukList, נקרא בנפרד
+    // ע"י הקורא ל-unsubscribeFromTzintuk לפני/אחרי הקריאה הזו - ר'
+    // tzintukSettingsFlow). listJoined מתאפס ל-false כי הרשימה מתרוקנת -
+    // הצטרפות חוזרת (אם המשתמש יירשם שוב) תדרוש אישור טלפוני מחדש.
+    tzintukListId: existing?.tzintukListId || null,
+    listJoined: false
   };
   const result = await upstashCommand('SET', key, JSON.stringify(record));
   if (result !== 'OK') {
@@ -231,7 +315,13 @@ async function getTzintukSubscription(phone, system) {
     return {
       enabled: parsed.enabled,
       since: parsed.since,
-      lastNotifiedAt: parsed.lastNotifiedAt || null
+      lastNotifiedAt: parsed.lastNotifiedAt || null,
+      // תאימות לאחור: רשומות שנשמרו לפני המעבר למנגנון רשימות tzl: לא
+      // כוללות את השדות האלו כלל - null/false הם ברירת המחדל הבטוחה
+      // (מסמנת "עדיין לא נוצרה שלוחה אישית / עדיין לא הצטרף בפועל"),
+      // ר' getOrCreateTzintukListId שמטפל בהשלמת ההרשמה למשתמשים כאלה.
+      tzintukListId: parsed.tzintukListId || null,
+      listJoined: parsed.listJoined === true
     };
   } catch (err) {
     console.error('[userStore] שגיאה בפענוח רשומת הרשמה לצינתוקים', err.message);
@@ -299,7 +389,14 @@ async function listTzintukSubscribers(system) {
         const prefix = `mitmachim:tzintuk:${normalizeSystem(system)}:`;
         const phone = key.startsWith(prefix) ? key.slice(prefix.length) : null;
         if (!phone) continue;
-        results.push({ phone, since: parsed.since, lastNotifiedAt: parsed.lastNotifiedAt || null });
+        results.push({
+          phone,
+          since: parsed.since,
+          lastNotifiedAt: parsed.lastNotifiedAt || null,
+          // ר' הערת תאימות לאחור זהה ב-getTzintukSubscription למעלה.
+          tzintukListId: parsed.tzintukListId || null,
+          listJoined: parsed.listJoined === true
+        });
       } catch (err) {
         console.error('[userStore] שגיאה בפענוח רשומת מנוי בעת סריקה', key, err.message);
       }
@@ -317,5 +414,7 @@ module.exports = {
   getTzintukSubscription,
   isSubscribedToTzintuk,
   updateLastNotifiedTimestamp,
-  listTzintukSubscribers
+  listTzintukSubscribers,
+  setTzintukListId,
+  markTzintukListJoined
 };

@@ -10,6 +10,9 @@
     "api/otzaria/index.js": {
       "maxDuration": 25
     },
+    "api/goodlink/index.js": {
+      "maxDuration": 25
+    },
     "api/transcribe.py": {
       "maxDuration": 20
     },

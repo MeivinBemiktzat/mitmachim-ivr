@@ -66,7 +66,8 @@ const SUPPORTED_SYSTEMS = [
   { value: 'mitmachim', label: 'מתמחים טופ (mitmachim.top)' },
   { value: 'freeivr', label: 'הגדרות מתקדמות - ימות המשיח (f2.freeivr.co.il)' },
   { value: 'otzaria', label: 'פורום אוצריא (otzaria.org/forum)' },
-  { value: 'goodlink', label: 'פורום גוד לינק (good-link.org)' }
+  { value: 'goodlink', label: 'פורום גוד לינק (good-link.org)' },
+  { value: 'binatop', label: 'פורום בינה טופ (bina.top)' }
 ];
 
 function isValidSystem(system) {
@@ -106,7 +107,7 @@ function renderPage({ status, message, selectedSystem, phoneValue, usernameValue
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>הרשמה להתראות קוליות - מתמחים טופ / freeivr / אוצריא / גוד לינק</title>
+<title>הרשמה להתראות קוליות - מתמחים טופ / freeivr / אוצריא / גוד לינק / בינה טופ</title>
 <style>
   :root {
     --bg: #f4f6f8;

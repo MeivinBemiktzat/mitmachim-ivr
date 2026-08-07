@@ -3,8 +3,8 @@
  * QStash (Scheduler חיצוני), לא ע"י Vercel Cron Jobs ולא ע"י GitHub Actions.
  * ==========================================================================
  * מוגדר ב-Upstash QStash כ-Schedule שרץ כל 2 דקות ומבצע HTTP GET/POST לכתובת
- * הזו (ר' README / הדרכת ההגדרה שנמסרה בנפרד). מבצע עבור כל אחד משלושת
- * הפורומים הנתמכים (mitmachim / freeivr / otzaria):
+ * הזו (ר' README / הדרכת ההגדרה שנמסרה בנפרד). מבצע עבור כל אחד מארבעת
+ * הפורומים הנתמכים (mitmachim / freeivr / otzaria / goodlink):
  *
  *   1. שליפת כל המנויים הפעילים לצינתוקים (listTzintukSubscribers, ר'
  *      userStore.js) - כל מי שיש לו רשומה עם enabled=true תחת אותה מערכת.
@@ -113,7 +113,8 @@ const LOCK_TTL_SECONDS = 90;
 const FORUMS = [
   { system: 'mitmachim', app: require('../yemot/index') },
   { system: 'freeivr', app: require('../freeivr/index') },
-  { system: 'otzaria', app: require('../otzaria/index') }
+  { system: 'otzaria', app: require('../otzaria/index') },
+  { system: 'goodlink', app: require('../goodlink/index') }
 ];
 
 /** קריאת פקודת Redis בודדת מול Upstash REST API - זהה בעיקרון ל-upstashCommand

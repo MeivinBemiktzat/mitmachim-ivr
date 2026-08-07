@@ -13,6 +13,9 @@
     "api/goodlink/index.js": {
       "maxDuration": 25
     },
+    "api/binatop/index.js": {
+      "maxDuration": 25
+    },
     "api/transcribe.py": {
       "maxDuration": 20
     },

@@ -5,7 +5,8 @@
  * הפורום + שם משתמש וסיסמא באותו פורום), ולשמור את השיוך הזה בזיכרון קבוע
  * (Upstash Redis, לפי REST API) - כדי ששלוחה 5 בכל אחת מגרסאות ה-IVR
  * (api/yemot/index.js עבור מתמחים טופ, api/freeivr/index.js עבור freeivr,
- * api/otzaria/index.js עבור פורום אוצריא) תוכל לזהות מתקשר לפי מספר הטלפון
+ * api/otzaria/index.js עבור פורום אוצריא, api/goodlink/index.js עבור פורום
+ * גוד לינק) תוכל לזהות מתקשר לפי מספר הטלפון
  * שלו (call.phone) ולהתחבר בשמו לפורום הרלוונטי כדי להקריא לו את ההתראות
  * האישיות שלו.
  *
@@ -64,7 +65,8 @@ const {
 const SUPPORTED_SYSTEMS = [
   { value: 'mitmachim', label: 'מתמחים טופ (mitmachim.top)' },
   { value: 'freeivr', label: 'הגדרות מתקדמות - ימות המשיח (f2.freeivr.co.il)' },
-  { value: 'otzaria', label: 'פורום אוצריא (otzaria.org/forum)' }
+  { value: 'otzaria', label: 'פורום אוצריא (otzaria.org/forum)' },
+  { value: 'goodlink', label: 'פורום גוד לינק (good-link.org)' }
 ];
 
 function isValidSystem(system) {
@@ -104,7 +106,7 @@ function renderPage({ status, message, selectedSystem, phoneValue, usernameValue
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>הרשמה להתראות קוליות - מתמחים טופ / freeivr / אוצריא</title>
+<title>הרשמה להתראות קוליות - מתמחים טופ / freeivr / אוצריא / גוד לינק</title>
 <style>
   :root {
     --bg: #f4f6f8;

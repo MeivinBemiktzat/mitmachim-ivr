@@ -51,10 +51,25 @@ const axios = require('axios');
 // מספר טלפון - ר' תיעוד מפורט ב-userStore.js (getUserCredentials/system).
 const {
   getUserCredentials,
+  saveUserCredentials,
   subscribeToTzintuk,
   unsubscribeFromTzintuk,
-  getTzintukSubscription
+  getTzintukSubscription,
+  markTzintukListJoined,
+  setTzintukListId
 } = require('../userStore');
+// חיבור פועל בפועל של מנגנון רשימות הצינתוק החינמיות (ר' תיעוד מפורט
+// ב-api/tzintukListManager.js) - עד לתיקון הזה המודול הזה היה קיים בפרויקט
+// אך לא נקרא משום מקום, ולכן tzintukListId/listJoined לא נוצרו/התעדכנו
+// אף פעם, וה-cron (check-notifications.js) דילג על כל מנוי לצינתוק בלי
+// לשלוח אף התראה בפועל, אף פעם.
+const { getOrCreateTzintukListId, checkListJoined, resetTzintukList } = require('../tzintukListManager');
+// שלוחה 9->2: הזנת שם משתמש/סיסמא מהטלפון (מקלדת רב-הקשה מובנית של ימות,
+// typing_playback_mode='EnglishKeyboard' ב-call.read(mode='tap')).
+// מקש 8 בתוך topicFlow: סיכום נושא בבינה מלאכותית (Gemini), לפי מפתח/מפתחות
+// שהמשתמש הזין מראש באתר ההרשמה (ר' aiSummaryFlow למטה).
+const { getAiKeys, saveAiKeys } = require('../aiKeyStore');
+const { summarizeTopic } = require('../geminiSummarizer');
 
 const FORUM_SYSTEM_ID = 'freeivr';
 
@@ -487,7 +502,7 @@ async function transcribeRecording(wavBuffer) {
  * 3. שכבת הקראה - הפיכת תוכן טקסטואלי מהפורום למבני message של ימות
  * ============================================================ */
 
-/** מסיר תגי HTML, קישורים גולמיים ותווים בעייתיים מטקסט המיועד להקראה. */
+/** מסיר תגי HTML, קישורים גולמיים ותווים בעייתיים ��טקסט המיועד להקראה. */
 function sanitizeForSpeech(raw) {
   if (!raw) return '';
   let text = String(raw)
@@ -502,6 +517,24 @@ function sanitizeForSpeech(raw) {
   // הגבלת אורך למניעת הודעות ארוכות מדי (מגבלת מנוע ההקראה של ימות)
   if (text.length > 1200) text = text.slice(0, 1200) + '... הטקסט המלא ארוך מכדי להיקרא במלואו';
   return text;
+}
+
+/** ניקוי טקסט הודעה לצורך *סיכום AI* (ולא הקראה ישירה): מסיר תגי HTML
+ *  ורווחים מיותרים, אך שומר על הטקסט המלא (בלי החלפת קישורים ב"קישור"
+ *  ובלי חיתוך ל-1200 תו כמו sanitizeForSpeech) - כי כאן הטקסט נשלח למודל
+ *  שפה, לא למנוע ההקראה, וההגבלה הכוללת על אורך המקור נעשית במקום אחד
+ *  מרוכז (MAX_SOURCE_CHARS ב-geminiSummarizer.js). */
+function stripHtmlForSummary(raw) {
+  if (!raw) return '';
+  return String(raw)
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /** בונה מערך messages להקראת כותרת פוסט/נושא כולל מטא-דאטה (מחבר, תאריך, תגובות). */
@@ -630,6 +663,14 @@ function navHintMessage() {
   return { type: 'text', data: NAV_HINT, removeInvalidChars: true };
 }
 
+// רמז ניווט ייעודי לתוך אשכול (topicFlow) בלבד - כולל את מקש 8 לסיכום
+// הנושא בבינה מלאכותית (ר' aiSummaryFlow).
+const TOPIC_NAV_HINT = 'הקישו 9 להבא, 7 לקודם, 8 לסיכום הנושא בבינה מלאכותית, 0 לחזרה, כוכבית לתפריט הראשי';
+
+function topicNavHintMessage() {
+  return { type: 'text', data: TOPIC_NAV_HINT, removeInvalidChars: true };
+}
+
 /** אפשרויות read סטנדרטיות לתפריטי הקשה (תפריט עם ספרה בודדת). */
 const MENU_READ_OPTS = {
   max_digits: 2,
@@ -748,17 +789,97 @@ async function settingsFlow(call) {
   const choice = await call.read([
     { type: 'text', data: 'הגדרות אישיות', removeInvalidChars: true },
     { type: 'text', data: 'להרשמה או הסרה מצינתוקים על התראות חדשות הקישו 1', removeInvalidChars: true },
+    { type: 'text', data: 'להזנת שם משתמש וסיסמא לפורום דרך הטלפון הקישו 2', removeInvalidChars: true },
+    { type: 'text', data: 'להזנת מפתח בינה מלאכותית לסיכום נושאים דרך הטלפון הקישו 3', removeInvalidChars: true },
     { type: 'text', data: 'לחזרה לתפריט הראשי הקישו כוכבית', removeInvalidChars: true }
   ], 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
 
   if (choice === '1') return tzintukSettingsFlow(call);
+  if (choice === '2') return credentialsEntryFlow(call);
+  if (choice === '3') return aiKeyEntryFlow(call);
   throw new GoToMainMenu();
 }
 
-/** שלוחה 9->1: הרשמה/הסרה מצינתוקים. מציג את המצב הנוכחי ומאפשר להחליף אותו
- *  בהקשה אחת (1 = פעולה הפוכה למצב הנוכחי). ר' תיעוד מפורט ב-userStore.js
- *  (subscribeToTzintuk/unsubscribeFromTzintuk) לגבי משמעות since וההתנהגות
- *  האידמפוטנטית של הרשמה חוזרת. */
+/**
+ * שלוחה 9->2: הזנת שם משתמש וסיסמא לפורום דרך הטלפון בלבד, ללא מקלדת מחשב -
+ * למשל למשתמש שנרשם לפורום בעצמו (לא דרך אתר ההרשמה שלנו) ורוצה לשייך את
+ * מספר הטלפון שלו לחשבון הקיים כדי להשתמש בשלוחה 5 (התראות)/9->1 (צינתוקים).
+ * שימוש במודול הקלדת הטקסט הרשמי המובנה של ימות המשיח - מצב tap עם
+ * typing_playback_mode='EnglishKeyboard'. התוצאה נשמרת דרך saveUserCredentials
+ * הקיים ב-userStore.js, בדיוק כמו שהיא נשמרת מהטופס באתר ההרשמה.
+ */
+async function credentialsEntryFlow(call) {
+  const username = await call.read([
+    { type: 'text', data: 'הזנת שם משתמש וסיסמא לפורום', removeInvalidChars: true },
+    { type: 'text', data: 'אנא הקישו את שם המשתמש שלכם בפורום באמצעות מקלדת הטלפון, ולאחר מכן הקישו סולמית פעמיים לסיום', removeInvalidChars: true }
+  ], 'tap', { max_digits: 40, min_digits: 1, sec_wait: 20, typing_playback_mode: 'EnglishKeyboard' });
+
+  if (!username) {
+    return call.id_list_message([
+      { type: 'text', data: 'לא הוזן שם משתמש, הפעולה בוטלה', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  const password = await call.read([
+    { type: 'text', data: 'כעת הקישו את הסיסמא שלכם בפורום, ולאחר מכן הקישו סולמית פעמיים לסיום', removeInvalidChars: true }
+  ], 'tap', { max_digits: 40, min_digits: 1, sec_wait: 20, typing_playback_mode: 'EnglishKeyboard' });
+
+  if (!password) {
+    return call.id_list_message([
+      { type: 'text', data: 'לא הוזנה סיסמא, הפעולה בוטלה', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  try {
+    await saveUserCredentials(call.phone, username, password, FORUM_SYSTEM_ID);
+  } catch (err) {
+    console.error('[credentialsEntryFlow] שגיאה בשמירת פרטי התחברות', err.message);
+    return call.id_list_message([
+      { type: 'text', data: 'אירעה שגיאה בשמירת הפרטים, אנא נסו שוב מאוחר יותר', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  return call.id_list_message([
+    { type: 'text', data: 'הפרטים נשמרו בהצלחה, כעת תוכלו להשתמש בשלוחת ההתראות ובצינתוקים', removeInvalidChars: true }
+  ], { prependToNextAction: true });
+}
+
+/**
+ * שלוחה 9->3: הזנת מפתח (או מספר מפתחות) Gemini API דרך הטלפון בלבד, ללא
+ * מקלדת מחשב - באותה שיטת הקלדה כמו credentialsEntryFlow. נשמר דרך
+ * saveAiKeys ב-aiKeyStore.js, לפי מספר הטלפון בלבד (ללא תלות בפורום) - כך
+ * שמפתח שהוזן פעם אחת זמין מיד לסיכום נושאים בכל אחד מהפורומים הנתמכים.
+ * תמיכה במספר מפתחות: ניתן להקיש כמה מפתחות ברצף, מופרדים בפסיק, כדי
+ * לאפשר fallback אוטומטי אם מפתח אחד עובר את המכסה החינמית.
+ */
+async function aiKeyEntryFlow(call) {
+  const rawKeys = await call.read([
+    { type: 'text', data: 'הזנת מפתח בינה מלאכותית לסיכום נושאים', removeInvalidChars: true },
+    { type: 'text', data: 'אנא הקישו את מפתח ה-API של גוגל ג׳מיני שלכם באמצעות מקלדת הטלפון, ולאחר מכן הקישו סולמית פעמיים לסיום. ניתן להזין כמה מפתחות ברצף, מופרדים בפסיק', removeInvalidChars: true }
+  ], 'tap', { max_digits: 200, min_digits: 1, sec_wait: 20, typing_playback_mode: 'EnglishKeyboard' });
+
+  if (!rawKeys) {
+    return call.id_list_message([
+      { type: 'text', data: 'לא הוזן מפתח, הפעולה בוטלה', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  try {
+    await saveAiKeys(call.phone, rawKeys);
+  } catch (err) {
+    console.error('[aiKeyEntryFlow] שגיאה בשמירת מפתח/מפתחות AI', err.message);
+    return call.id_list_message([
+      { type: 'text', data: 'אירעה שגיאה בשמירת המפתח, אנא ודאו שהזנתם מפתח תקין ונסו שוב', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  return call.id_list_message([
+    { type: 'text', data: 'המפתח נשמר בהצלחה, כעת תוכלו להשתמש בסיכום נושאים בבינה מלאכותית בתוך אשכול', removeInvalidChars: true }
+  ], { prependToNextAction: true });
+}
+
+/** שלוחה 9->1: הרשמה/הסרה מצינתוקים, מחוברת בפועל למנגנון רשימות הצינתוק
+ *  החינמיות (ר' תיעוד מפורט ב-tzintukListManager.js). */
 async function tzintukSettingsFlow(call) {
   let creds;
   try {
@@ -773,7 +894,7 @@ async function tzintukSettingsFlow(call) {
   if (!creds) {
     return call.id_list_message([
       { type: 'text', data: 'מספר הטלפון שלכם אינו רשום עדיין לפורום', removeInvalidChars: true },
-      { type: 'text', data: 'כדי להירשם, אנא היכנסו לאתר ההרשמה ומלאו את הפרטים שלכם בפורום', removeInvalidChars: true }
+      { type: 'text', data: 'כדי להירשם, אנא היכנסו לאתר ההרשמה ומלאו את הפרטים שלכם בפורום, או הקישו 2 בתפריט ההגדרות להזנת הפרטים דרך הטלפון', removeInvalidChars: true }
     ], { prependToNextAction: true });
   }
 
@@ -789,6 +910,15 @@ async function tzintukSettingsFlow(call) {
 
   const isSubscribed = !!sub?.enabled;
 
+  if (isSubscribed && sub?.tzintukListId && !sub?.listJoined) {
+    try {
+      const joined = await checkListJoined(sub.tzintukListId, call.phone);
+      if (joined) await markTzintukListJoined(call.phone, FORUM_SYSTEM_ID);
+    } catch (err) {
+      console.error('[tzintukSettingsFlow] שגיאה ברענון מצב הצטרפות', err.message);
+    }
+  }
+
   const choice = await call.read([
     { type: 'text', data: isSubscribed ? 'אתם רשומים כרגע לצינתוקים על התראות חדשות' : 'אינכם רשומים כרגע לצינתוקים על התראות חדשות', removeInvalidChars: true },
     { type: 'text', data: isSubscribed ? 'להסרה מצינתוקים הקישו 1' : 'להרשמה לצינתוקים הקישו 1', removeInvalidChars: true },
@@ -799,15 +929,37 @@ async function tzintukSettingsFlow(call) {
 
   try {
     if (isSubscribed) {
+      const existing = await getTzintukSubscription(call.phone, FORUM_SYSTEM_ID);
       await unsubscribeFromTzintuk(call.phone, FORUM_SYSTEM_ID);
+      if (existing?.tzintukListId) {
+        try { await resetTzintukList(existing.tzintukListId); }
+        catch (err) { console.error('[tzintukSettingsFlow] שגיאה באיפוס רשימת צינתוק', err.message); }
+      }
       await call.id_list_message([
         { type: 'text', data: 'הוסרתם בהצלחה מצינתוקים על התראות חדשות', removeInvalidChars: true }
       ], { prependToNextAction: true });
     } else {
       await subscribeToTzintuk(call.phone, FORUM_SYSTEM_ID);
-      await call.id_list_message([
+      let extensionNumber = null;
+      try {
+        const result = await getOrCreateTzintukListId(call.phone, FORUM_SYSTEM_ID, {
+          getTzintukSubscription,
+          setTzintukListId
+        });
+        extensionNumber = result?.extensionNumber || null;
+      } catch (err) {
+        console.error('[tzintukSettingsFlow] שגיאה ביצירת שלוחת הצטרפות לצינתוק', err.message);
+      }
+
+      const messages = [
         { type: 'text', data: 'נרשמתם בהצלחה לצינתוקים על התראות חדשות', removeInvalidChars: true }
-      ], { prependToNextAction: true });
+      ];
+      if (extensionNumber) {
+        messages.push({ type: 'text', data: `כדי לאשר את ההרשמה בפועל, יש לחייג בנפרד למספר השלוחה ${extensionNumber} ולהקיש 1`, removeInvalidChars: true });
+      } else {
+        messages.push({ type: 'text', data: 'ההרשמה נשמרה, אך יצירת שלוחת האישור נכשלה כרגע - נסו להיכנס לתפריט הזה שוב מאוחר יותר', removeInvalidChars: true });
+      }
+      await call.id_list_message(messages, { prependToNextAction: true });
     }
   } catch (err) {
     console.error('[tzintukSettingsFlow] שגיאה בעדכון הרשמה לצינתוקים', err.message);
@@ -817,6 +969,41 @@ async function tzintukSettingsFlow(call) {
   }
 
   throw new GoToMainMenu();
+}
+
+/**
+ * מכריז "יש לך X התראות חדשות" בתפריט הראשי, *לפני* שהמשתמש בוחר שלוחה -
+ * תיקון באג: בעבר ההכרזה הזו קרתה בתוך שלוחה 5 עצמה (notificationsFlow),
+ * חסרת תכלית. המיקום הנכון הוא בתפריט הראשי, להנחות אותו *להיכנס* לשלוחה 5.
+ */
+async function announceNewNotifications(call) {
+  try {
+    const sub = await getTzintukSubscription(call.phone, FORUM_SYSTEM_ID);
+    if (!sub?.enabled) return;
+
+    const creds = await getUserCredentials(call.phone, FORUM_SYSTEM_ID);
+    if (!creds) return;
+
+    const userCookie = await loginAsUser(creds.username, creds.password);
+    const data = await fetchUserNotifications(userCookie);
+    const notifications = data?.notifications || [];
+
+    const sinceTime = new Date(sub.since).getTime();
+    const newCount = notifications.filter((n) => {
+      const t = new Date(n.datetimeISO || n.datetime || 0).getTime();
+      return !isNaN(t) && t > sinceTime;
+    }).length;
+
+    if (newCount > 0) {
+      await call.id_list_message([
+        { type: 'text', data: 'יש לך', removeInvalidChars: true },
+        { type: 'number', data: String(newCount) },
+        { type: 'text', data: 'התראות חדשות, לשמיעה הקישו 5', removeInvalidChars: true }
+      ]);
+    }
+  } catch (err) {
+    console.error('[announceNewNotifications] שגיאה בבדיקת מונה התראות חדשות', err.message);
+  }
 }
 
 async function notificationsFlow(call) {
@@ -859,32 +1046,6 @@ async function notificationsFlow(call) {
 
   const notifications = data?.notifications || [];
 
-  // הכרזת "יש לך X התראות חדשות בשלוחה 5" - נספרות רק התראות שנוצרו אחרי
-  // מועד ההרשמה לצינתוקים (since) של המשתמש, כדי שההכרזה תתאם בדיוק את מה
-  // שנחשב "חדש" גם לצורך שליחת הצינתוק עצמו (ר' api/cron/check-notifications.js).
-  // אם המשתמש כלל לא רשום לצינתוקים - לא מכריזים כלום (ההתנהגות המקורית
-  // של השלוחה נשמרת ללא שינוי במקרה הזה).
-  try {
-    const sub = await getTzintukSubscription(call.phone, FORUM_SYSTEM_ID);
-    if (sub?.enabled) {
-      const sinceTime = new Date(sub.since).getTime();
-      const newCount = notifications.filter((n) => {
-        const t = new Date(n.datetimeISO || n.datetime || 0).getTime();
-        return !isNaN(t) && t > sinceTime;
-      }).length;
-      if (newCount > 0) {
-        await call.id_list_message([
-          { type: 'text', data: `יש לך`, removeInvalidChars: true },
-          { type: 'number', data: String(newCount) },
-          { type: 'text', data: 'התראות חדשות בשלוחה 5', removeInvalidChars: true }
-        ], { prependToNextAction: true });
-      }
-    }
-  } catch (err) {
-    // כשל בהכרזה על ההתראות החדשות לא אמור לחסום את שמיעת ההתראות עצמן.
-    console.error('[notificationsFlow] שגיאה בבדיקת מונה התראות חדשות', err.message);
-  }
-
   if (notifications.length === 0) {
     return call.id_list_message([
       { type: 'text', data: 'אין לכם כרגע התראות חדשות בפורום', removeInvalidChars: true }
@@ -904,16 +1065,20 @@ async function notificationsFlow(call) {
     if (key === '9' || key === '1' || key === '') { i++; continue; }
     if (key === '7') { i = Math.max(0, i - 1); continue; }
     if (key === '0' || key === '*') throw new GoToMainMenu();
-    i++;
+    // תיקון ניווט (5ה): הקשה לא מזוהה חוזרת על הפריט הנוכחי (re-prompt).
+    continue;
   }
 
-  const endKey = await call.read([
-    { type: 'text', data: 'הגעתם לסוף רשימת ההתראות', removeInvalidChars: true },
-    { type: 'text', data: 'לחזרה להתחלת הרשימה הקישו 7, לתפריט הראשי הקישו כוכבית', removeInvalidChars: true }
-  ], 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '*' });
+  for (;;) {
+    const endKey = await call.read([
+      { type: 'text', data: 'הגעתם לסוף רשימת ההתראות', removeInvalidChars: true },
+      { type: 'text', data: 'לחזרה להתחלת הרשימה הקישו 7, לתפריט הראשי הקישו כוכבית', removeInvalidChars: true }
+    ], 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '*' });
 
-  if (endKey === '7') return notificationsFlow(call);
-  throw new GoToMainMenu();
+    if (endKey === '7') return notificationsFlow(call);
+    if (endKey === '*') throw new GoToMainMenu();
+    // הקשה אחרת - חוזר על אותה הודעת סיום (re-prompt).
+  }
 }
 
 /* ---------- שלוחה 4: חיפוש קולי - הקלטה -> תמלול -> חיפוש בפורום ---------- */
@@ -926,7 +1091,7 @@ async function notificationsFlow(call) {
 // הערה קריטית (תוקן): בניסיון קודם הוחלף מספר השלוחה הממוספר (8) בשם תיקייה
 // אנגלי חופשי ("VoiceSearchRecordings"), בהשראת פרויקט ייחוס אחר. זה היה שגוי
 // ולכן ההקלטה לא נשמרה בכלל: תיעוד UpdateExtension הרשמי של ימות מראה
-// שהפרמטר path הוא תמיד *מספר שלוחה* בעץ החיוג (למשל path=ivr2:1), ולא נתיב
+// שהפרמטר path הוא תמיד *מספר שלוחה* בעץ החיוג (למשל path=ivr2:1), ול�� נתיב
 // טקסטואלי חופשי - זו שלוחה מבוססת ספרות בלבד, כמו כל שלוחה אחרת בימות.
 // ה-path בפרויקט הייחוס ("/ApiRecords") כנראה תלוי בהתנהגות ספציפית של
 // אותה מערכת ולא ניתן להעתיק אותו כמו שהוא. חוזרים לשלוחה ממוספרת - זו
@@ -959,7 +1124,7 @@ const VOICE_SEARCH_MGMT_PATH = `ivr2:/${VOICE_SEARCH_EXTENSION_NUMBER}`; // פו
 // שהוקלטה הקלטה חדשה. זה נצפה בפועל: "החיפוש עובד פעם ראשונה בלבד, ומשם
 // כל שיחה מוצאת/מתמללת את מה שנשמר בשיחה הקודמת".
 //
-// תוקן סופית לפי תיעוד רשמי של ימות (מודול API, "הגדרות עבור הקלטות",
+// תוקן סופית לפי תיעוד רשמ�� של ימות (מודול API, "הגדרות עבור הקלטות",
 // הערך החמישי): כאשר לא מציינים file_name כלל, ימות עצמה ממספרת את הקובץ
 // אוטומטית כ"מספר הגבוה ביותר בשלוחה + 1" - כלומר כל הקלטה מקבלת מעצמה שם
 // קובץ חדש וייחודי (101, 102, 103...) בלי שום צורך שלנו לנחש/לייצר שם.
@@ -1399,6 +1564,13 @@ async function helpFlow(call) {
 
 router.get('/', async (call) => {
   console.log(`[MAIN] שיחה חדשה/פעילה מ-${call.phone}, callId=${call.callId}`);
+
+  // הכרזת "יש לך X התראות חדשות" - פעם אחת בלבד בתחילת השיחה, *לפני*
+  // כניסה ללולאת התפריט, ולכן לא חוזרת על עצמה בכל GoToMainMenu (ר' תיעוד
+  // announceNewNotifications). best-effort בלבד - לעולם לא חוסמת את התפריט.
+  // תיקון קריטי: הפונקציה הייתה קיימת בקובץ אך לא נקראה משום מקום - ההכרזה
+  // מעולם לא נשמעה בפועל עד לתיקון הזה.
+  await announceNewNotifications(call);
 
   // לולאה אינסופית: כל בחירה בתפריט מפעילה פונקציה פנימית; GoToMainMenu מחזיר לכאן.
   // אין ולו קריאה אחת ל-call.go_to_folder בקוד הזה - הניווט כולו פנימי.

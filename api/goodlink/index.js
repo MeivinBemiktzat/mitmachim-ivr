@@ -65,6 +65,11 @@ const {
   unsubscribeFromTzintuk,
   getTzintukSubscription
 } = require('../userStore');
+// שלוחה 9->3: הזנת מפתח/מפתחות AI (Gemini) מהטלפון, לשימוש עתידי בסיכום
+// נושאים בבינה מלאכותית - ר' aiKeyEntryFlow למטה. תיקון קריטי: aiKeyStore
+// היה קיים בפרויקט (משותף לכל הפורומים) אך לא נקרא כלל מקובץ זה - לא הייתה
+// כל דרך למשתמשי פורום גוד לינק להזין מפתח AI.
+const { saveAiKeys } = require('../aiKeyStore');
 
 /* ============================================================
  * 1. תשתית כללית
@@ -122,7 +127,7 @@ async function withRetry(fn, retries = 1) {
 }
 
 /**
- * ניהול session של "משתמש שירות" קבוע בפורום, לצורך קריאה ל-API-ים שדורשים
+ * ניהול session של "משתמש שירות" קבוע בפורום, לצורך ק��יאה ל-API-ים שדורשים
  * חיבור (כגון /api/search - חיפוש חסום לאורחים ב-NodeBB כברירת מחדל, ראו הערה
  * ליד fetchNewestTopics). ה-session מוחזק בזיכרון התהליך (module-level state):
  *   1. GET /api/config -> csrf_token + עוגיית express.sid ראשונית.
@@ -306,7 +311,7 @@ async function fetchNewestTopics(page = 1) {
   }), 1);
 }
 
-/** ממיר תגובת /api/search (מבנה posts[].topic מקונן, ראה תיעוד ליד fetchNewestTopics)
+/** ממיר תגובת /api/search (מבנה posts[].topic ��קונן, ראה תיעוד ליד fetchNewestTopics)
  *  לרשימת אובייקטי topic שטוחה, כדי שנוכל להשתמש באותם buildTopicHeaderMessages
  *  ו-browseTopicList כמו בשאר שלוחות עיון האשכולות. הערה קריטית: לאובייקט ה-topic
  *  המקונן בתגובת החיפוש אין שדה user משלו (זה שדה של ה-post המכיל), לכן יש להעתיק
@@ -419,7 +424,7 @@ async function fetchTopic(tid, slug, page = 1) {
 //     בשרתי הקבצים של ימות (הבקשה הראשונה ל-DownloadFile חוזרת 404 אף
 //     שההקלטה כן נשמרה שבריר שנייה אחר כך) - נפתר ע"י ניסיונות חוזרים.
 //  2) קאשינג בצד שרתי ימות/CDN לפי הנתיב: DownloadFile מחזיר תוכן ישן
-//     (מטמון) ולא את התוכן העדכני שנכתב זה עתה על גבי אותו path+file_name
+//     (מטמון) ולא את התוכ�� העדכני שנכתב זה עתה על גבי אותו path+file_name
 //     קבוע - נצפה בפועל כ"מוצא כל פעם את ההקלטה הקודמת ולא את החדשה". זו
 //     לא שגיאת HTTP (200 עם תוכן ישן), כך שניסיון חוזר על אותו נתיב בלבד
 //     לא פותר אותה - הפתרון האמין היחיד הוא לעולם לא לחזור על אותו path+
@@ -542,7 +547,7 @@ function buildTopicHeaderMessages(topic) {
  *  באותה שיטה בדיוק ש-topicFlow כבר משתמשת בה לניווט בין עמודים (pageCount).
  *  עלות: קריאת API נוספת אחת per topic ברשימה - מקובל לפי בקשת המשתמש. */
 async function fetchLastPost(tid, slug, postcount) {
-  // הערה קריטית (תוקן): לא ניתן לנחש את מספר העמוד האחרון לפי postcount בלבד -
+  // הערה קריטית (תוקן): לא ניתן לנחש א�� מספר העמוד האחרון לפי postcount בלבד -
   // topic.postcount שמגיע מרשימות (recent/search) לעיתים undefined או לא מדויק,
   // מה שגרם ל-estimatedLastPage לצאת תמיד 1 (Math.ceil((undefined||1)/20)=1) -
   // כלומר בפועל תמיד הובא עמוד 1, ולכן הוקרא הפוסט הראשון במקום האחרון (הבאג
@@ -699,7 +704,7 @@ async function recentPostsFlow(call, page) {
   });
 }
 
-/* ---------- שלוחה 2: נושאים אחרונים - אשכולות חדשים לפי זמן *יצירת האשכול*
+/* ---------- שלוחה 2: נושאים אחרונים - א��כולות חדשים לפי זמן *יצירת האשכול*
  * (topic.timestamp), תואם לרשימה המוצגת בכתובת:
  * https://good-link.org/search?in=titles&sortBy=topic.timestamp&sortDirection=desc&showAs=topics
  * שונה משלוחה 1 שמציגה פוסטים/נושאים לפי זמן פעילות/תגובה אחרונה (api/recent). ---------- */
@@ -758,11 +763,47 @@ async function settingsFlow(call) {
   const choice = await call.read([
     { type: 'text', data: 'הגדרות אישיות', removeInvalidChars: true },
     { type: 'text', data: 'להרשמה או הסרה מצינתוקים על התראות חדשות הקישו 1', removeInvalidChars: true },
+    { type: 'text', data: 'להזנת מפתח בינה מלאכותית לסיכום נושאים דרך הטלפון הקישו 3', removeInvalidChars: true },
     { type: 'text', data: 'לחזרה לתפריט הראשי הקישו כוכבית', removeInvalidChars: true }
   ], 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
 
   if (choice === '1') return tzintukSettingsFlow(call);
+  if (choice === '3') return aiKeyEntryFlow(call);
   throw new GoToMainMenu();
+}
+
+/**
+ * שלוחה 9->3: הזנת מפתח (או מספר מפתחות) Gemini API דרך הטלפון בלבד, ללא
+ * מקלדת מחשב - במקלדת רב-הקשה מובנית של ימות (typing_playback_mode=
+ * 'EnglishKeyboard'). נשמר דרך saveAiKeys ב-aiKeyStore.js, לפי מספר הטלפון
+ * בלבד (ללא תלות בפורום/שם משתמש) - משותף לכל הפורומים הנתמכים בפרויקט.
+ * תמיכה במספר מפתחות: ניתן להקיש כמה מפתחות ברצף, מופרדים בפסיק, כדי
+ * לאפשר fallback אוטומטי אם מפתח אחד עובר את המכסה החינמית.
+ */
+async function aiKeyEntryFlow(call) {
+  const rawKeys = await call.read([
+    { type: 'text', data: 'הזנת מפתח בינה מלאכותית לסיכום נושאים', removeInvalidChars: true },
+    { type: 'text', data: 'אנא הקישו את מפתח ה-API של גוגל ג׳מיני שלכם באמצעות מקלדת הטלפון, ולאחר מכן הקישו סולמית פעמיים לסיום. ניתן להזין כמה מפתחות ברצף, מופרדים בפסיק', removeInvalidChars: true }
+  ], 'tap', { max_digits: 200, min_digits: 1, sec_wait: 20, typing_playback_mode: 'EnglishKeyboard' });
+
+  if (!rawKeys) {
+    return call.id_list_message([
+      { type: 'text', data: 'לא הוזן מפתח, הפעולה בוטלה', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  try {
+    await saveAiKeys(call.phone, rawKeys);
+  } catch (err) {
+    console.error('[aiKeyEntryFlow] שגיאה בשמירת מפתח/מפתחות AI', err.message);
+    return call.id_list_message([
+      { type: 'text', data: 'אירעה שגיאה בשמירת המפתח, אנא ודאו שהזנתם מפתח תקין ונסו שוב', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  return call.id_list_message([
+    { type: 'text', data: 'המפתח נשמר בהצלחה', removeInvalidChars: true }
+  ], { prependToNextAction: true });
 }
 
 /** שלוחה 9->1: הרשמה/הסרה מצינתוקים. מציג את המצב הנוכחי ומאפשר להחליף אותו
@@ -869,32 +910,6 @@ async function notificationsFlow(call) {
 
   const notifications = data?.notifications || [];
 
-  // הכרזת "יש לך X התראות חדשות בשלוחה 5" - נספרות רק התראות שנוצרו אחרי
-  // מועד ההרשמה לצינתוקים (since) של המשתמש, כדי שההכרזה תתאם בדיוק את מה
-  // שנחשב "חדש" גם לצורך שליחת הצינתוק עצמו (ר' api/cron/check-notifications.js).
-  // אם המשתמש כלל לא רשום לצינתוקים - לא מכריזים כלום (ההתנהגות המקורית
-  // של השלוחה נשמרת ללא שינוי במקרה הזה).
-  try {
-    const sub = await getTzintukSubscription(call.phone, FORUM_SYSTEM_ID);
-    if (sub?.enabled) {
-      const sinceTime = new Date(sub.since).getTime();
-      const newCount = notifications.filter((n) => {
-        const t = new Date(n.datetimeISO || n.datetime || 0).getTime();
-        return !isNaN(t) && t > sinceTime;
-      }).length;
-      if (newCount > 0) {
-        await call.id_list_message([
-          { type: 'text', data: `יש לך`, removeInvalidChars: true },
-          { type: 'number', data: String(newCount) },
-          { type: 'text', data: 'התראות חדשות בשלוחה 5', removeInvalidChars: true }
-        ], { prependToNextAction: true });
-      }
-    }
-  } catch (err) {
-    // כשל בהכרזה על ההתראות החדשות לא אמור לחסום את שמיעת ההתראות עצמן.
-    console.error('[notificationsFlow] שגיאה בבדיקת מונה התראות חדשות', err.message);
-  }
-
   if (notifications.length === 0) {
     return call.id_list_message([
       { type: 'text', data: 'אין לכם כרגע התראות חדשות בפורום', removeInvalidChars: true }
@@ -914,21 +929,69 @@ async function notificationsFlow(call) {
     if (key === '9' || key === '1' || key === '') { i++; continue; }
     if (key === '7') { i = Math.max(0, i - 1); continue; }
     if (key === '0' || key === '*') throw new GoToMainMenu();
-    i++;
+    // תיקון ניווט (5ה): הקשה לא מזוהה חוזרת על הפריט הנוכחי (re-prompt),
+    // ולא מקדמת אוטומטית לפריט הבא - כדי לא ליצור תחושת "דילוג" לא צפוי.
+    continue;
   }
 
-  const endKey = await call.read([
-    { type: 'text', data: 'הגעתם לסוף רשימת ההתראות', removeInvalidChars: true },
-    { type: 'text', data: 'לחזרה להתחלת הרשימה הקישו 7, לתפריט הראשי הקישו כוכבית', removeInvalidChars: true }
-  ], 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '*' });
+  // תיקון ניווט (5ה): במסך סוף-רשימה, רק '*' (במפורש) גורם למעבר לתפריט
+  // הראשי - כל הקשה אחרת (כולל 7/9 לא רלוונטיים כאן) חוזרת על אותה הודעת
+  // סיום, ולא "בורחת" לתפריט הראשי כמו שקרה בעבר (זו הייתה הסיבה שהקשות
+  // 7/9 מהרגל, לפי ה-NAV_HINT הרגיל, נראו "לפעמים לא עובדות").
+  for (;;) {
+    const endKey = await call.read([
+      { type: 'text', data: 'הגעתם לסוף רשימת ההתראות', removeInvalidChars: true },
+      { type: 'text', data: 'לחזרה להתחלת הרשימה הקישו 7, לתפריט הראשי הקישו כוכבית', removeInvalidChars: true }
+    ], 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '*' });
 
-  if (endKey === '7') return notificationsFlow(call);
-  throw new GoToMainMenu();
+    if (endKey === '7') return notificationsFlow(call);
+    if (endKey === '*') throw new GoToMainMenu();
+    // הקשה אחרת - חוזר על אותה הודעת סיום (re-prompt).
+  }
+}
+
+/**
+ * מכריז "יש לך X התראות חדשות" בתפריט הראשי, *לפני* שהמשתמש בוחר שלוחה -
+ * תיקון באג: בעבר ההכרזה הזו קרתה בתוך שלוחה 5 עצמה (notificationsFlow),
+ * כלומר אחרי שהמשתמש כבר היה שם - חסרת תכלית, כי המשתמש כבר בחר להיכנס.
+ * המיקום הנכון הוא בתפריט הראשי, כדי להנחות אותו *להיכנס* לשלוחה 5.
+ * רצה פעם אחת בלבד בתחילת השיחה (מחוץ ל-for(;;) בתפריט הראשי) ולא בכל
+ * חזרה ללולאה, כדי לא לחזור על ההכרזה בכל GoToMainMenu. best-effort: כל
+ * שגיאה (רשת/התחברות) נלכדת ומתעלמת - אף פעם לא חוסמת את המשך השיחה.
+ */
+async function announceNewNotifications(call) {
+  try {
+    const sub = await getTzintukSubscription(call.phone, FORUM_SYSTEM_ID);
+    if (!sub?.enabled) return;
+
+    const creds = await getUserCredentials(call.phone, FORUM_SYSTEM_ID);
+    if (!creds) return;
+
+    const userCookie = await loginAsUser(creds.username, creds.password);
+    const data = await fetchUserNotifications(userCookie);
+    const notifications = data?.notifications || [];
+
+    const sinceTime = new Date(sub.since).getTime();
+    const newCount = notifications.filter((n) => {
+      const t = new Date(n.datetimeISO || n.datetime || 0).getTime();
+      return !isNaN(t) && t > sinceTime;
+    }).length;
+
+    if (newCount > 0) {
+      await call.id_list_message([
+        { type: 'text', data: 'יש לך', removeInvalidChars: true },
+        { type: 'number', data: String(newCount) },
+        { type: 'text', data: 'התראות חדשות, לשמיעה הקישו 5', removeInvalidChars: true }
+      ]);
+    }
+  } catch (err) {
+    console.error('[announceNewNotifications] שגיאה בבדיקת מונה התראות חדשות', err.message);
+  }
 }
 
 /* ---------- שלוחה 4: חיפוש קולי - הקלטה -> תמלול -> חיפוש בפורום ---------- */
 
-// תיקיית יעד קבועה לשמירת הקלטות החיפוש, כתת-שלוחה של השלוחה הראשית.
+// תיקיית יעד קבועה לשמ��רת הקלטות החיפוש, כתת-שלוחה של השלוחה הראשית.
 // ensureRecordingFolder דואגת שהיא תיווצר אוטומטית כ-type=playfile (השלוחה
 // שמיועדת להחזיק קבצים להשמעה/הקלטה) אם עוד אינה קיימת - ר' תיעוד
 // UpdateExtension: "במידה והשלוחה לא קיימת, תיווצר".
@@ -1402,6 +1465,11 @@ async function helpFlow(call) {
 
 router.get('/', async (call) => {
   console.log(`[MAIN] שיחה חדשה/פעילה מ-${call.phone}, callId=${call.callId}`);
+
+  // הכרזת "יש לך X התראות חדשות" - פעם אחת בלבד בתחילת השיחה, *לפני*
+  // כניסה ללולאת התפריט, ולכן לא חוזרת על עצמה בכל GoToMainMenu (ר' תיעוד
+  // announceNewNotifications). best-effort בלבד - לעולם לא חוסמת את התפריט.
+  await announceNewNotifications(call);
 
   // לולאה אינסופית: כל בחירה בתפריט מפעילה פונקציה פנימית; GoToMainMenu מחזיר לכאן.
   // אין ולו קריאה אחת ל-call.go_to_folder בקוד הזה - הניווט כולו פנימי.

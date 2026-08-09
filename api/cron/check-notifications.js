@@ -239,7 +239,7 @@ async function processForum(forum, log) {
     subscribers = await listTzintukSubscribers(forum.system);
     log(`מערכת ${forum.system}: נמצאו ${subscribers.length} מנויים פעילים לבדיקה`);
   } catch (err) {
-    console.error(`[cron/check-notifications] שגיאה בשליפת רשימת מנויים עבור ${forum.system}`, err.message);
+    console.error(`[cron/check-notifications] שגיאה בשליפת רשימת מנויים ��בור ${forum.system}`, err.message);
     results.details.push({ status: 'list-error', error: err.message });
     return results;
   }

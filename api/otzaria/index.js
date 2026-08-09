@@ -55,12 +55,12 @@ const {
   subscribeToTzintuk,
   unsubscribeFromTzintuk,
   getTzintukSubscription
-} = require('../userStore');
+} = require('../../lib/userStore');
 // שלוחה 9->3: הזנת מפתח/מפתחות AI (Gemini) מהטלפון, לשימוש עתידי בסיכום
 // נושאים בבינה מלאכותית - ר' aiKeyEntryFlow למטה. תיקון קריטי: aiKeyStore
 // היה קיים בפרויקט (משותף לכל הפורומים) אך לא נקרא כלל מקובץ זה - לא הייתה
 // כל דרך למשתמשי פורום אוצריא להזין מפתח AI.
-const { saveAiKeys } = require('../aiKeyStore');
+const { saveAiKeys } = require('../../lib/aiKeyStore');
 
 /* ============================================================
  * 1. תשתית כללית

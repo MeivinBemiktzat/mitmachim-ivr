@@ -69,19 +69,19 @@ const {
   getTzintukSubscription,
   markTzintukListJoined,
   setTzintukListId
-} = require('../userStore');
+} = require('../../lib/userStore');
 // חיבור פועל בפועל של מנגנון רשימות הצינתוק החינמיות (ר' תיעוד מפורט
 // ב-api/tzintukListManager.js) - עד לתיקון הזה המודול הזה היה קיים בפרויקט
 // אך לא נקרא משום מקום, ולכן tzintukListId/listJoined לא נוצרו/התעדכנו
 // אף פעם, וה-cron (check-notifications.js) דילג על כל מנוי לצינתוק בלי
 // לשלוח אף התראה בפועל, אף פעם.
-const { getOrCreateTzintukListId, checkListJoined, resetTzintukList } = require('../tzintukListManager');
+const { getOrCreateTzintukListId, checkListJoined, resetTzintukList } = require('../../lib/tzintukListManager');
 // שלוחה 9->2: הזנת שם משתמש/סיסמא מהטלפון (מקלדת רב-הקשה מובנית של ימות,
 // typing_playback_mode='EnglishKeyboard' ב-call.read(mode='tap')).
 // מקש 8 בתוך topicFlow: סיכום נושא בבינה מלאכותית (Gemini), לפי מפתח/מפתחות
 // שהמשתמש הזין מראש באתר ההרשמה (ר' aiSummaryFlow למטה).
-const { getAiKeys, saveAiKeys } = require('../aiKeyStore');
-const { summarizeTopic } = require('../geminiSummarizer');
+const { getAiKeys, saveAiKeys } = require('../../lib/aiKeyStore');
+const { summarizeTopic } = require('../../lib/geminiSummarizer');
 
 /* ============================================================
  * 1. תשתית כללית

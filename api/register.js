@@ -56,7 +56,7 @@ const {
   saveUserCredentials,
   subscribeToTzintuk,
   unsubscribeFromTzintuk
-} = require('./userStore');
+} = require('../lib/userStore');
 
 /** רשימת הפורומים הנתמכים: value = מזהה system (תואם ל-userStore.js
  *  ולפרמטר FORUM_SYSTEM_ID/'mitmachim' בכל אחת מגרסאות ה-IVR), label = שם

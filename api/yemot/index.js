@@ -45,13 +45,13 @@ const {
   unsubscribeFromTzintuk,
   getTzintukSubscription,
   markTzintukListJoined
-} = require('../userStore');
+} = require('../../lib/userStore');
 // חיבור פועל בפועל של מנגנון רשימות הצינתוק החינמיות (ר' תיעוד מפורט
 // ב-api/tzintukListManager.js) - עד לתיקון הזה המודול הזה היה קיים בפרויקט
 // אך לא נקרא משום מקום, ולכן tzintukListId/listJoined לא נוצרו/התעדכנו
 // אף פעם, וה-cron (check-notifications.js) דילג על כל מנוי לצינתוק בלי
 // לשלוח אף התראה בפועל, אף פעם.
-const { getOrCreateTzintukListId, checkListJoined, resetTzintukList } = require('../tzintukListManager');
+const { getOrCreateTzintukListId, checkListJoined, resetTzintukList } = require('../../lib/tzintukListManager');
 // שלוחה 9->2: הזנת שם משתמש/סיסמא מהטלפון (מקלדת רב-הקשה מובנית של ימות,
 // typing_playback_mode='EnglishKeyboard' ב-call.read(mode='tap') - ר' תיעוד
 // מפורט בהערות ליד credentialsEntryFlow למטה).
@@ -61,8 +61,8 @@ const { getOrCreateTzintukListId, checkListJoined, resetTzintukList } = require(
 // כל דרך בפועל להזין מפתח AI, ולכן סיכום הנושאים (מקש 8/# ב-topicFlow)
 // לא היה נגיש לאף אחד. מקש # בתוך topicFlow: סיכום נושא בבינה מלאכותית
 // (Gemini), לפי מפתח/מפתחות שהמשתמש הזין (ר' aiSummaryFlow למטה).
-const { getAiKeys, saveAiKeys } = require('../aiKeyStore');
-const { summarizeTopic } = require('../geminiSummarizer');
+const { getAiKeys, saveAiKeys } = require('../../lib/aiKeyStore');
+const { summarizeTopic } = require('../../lib/geminiSummarizer');
 
 /* ============================================================
  * 1. תשתית כללית
@@ -957,7 +957,7 @@ async function tzintukSettingsFlow(call) {
       try {
         const result = await getOrCreateTzintukListId(call.phone, FORUM_SYSTEM_ID, {
           getTzintukSubscription: (p, s) => getTzintukSubscription(p, s),
-          setTzintukListId: (p, s, listId) => require('../userStore').setTzintukListId(p, s, listId)
+          setTzintukListId: (p, s, listId) => require('../../lib/userStore').setTzintukListId(p, s, listId)
         });
         extensionNumber = result?.extensionNumber || null;
       } catch (err) {

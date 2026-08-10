@@ -25,5 +25,11 @@
     "api/cron/check-notifications.js": {
       "maxDuration": 60
     }
-  }
+  },
+  "rewrites": [
+    {
+      "source": "/api/register/ai-key",
+      "destination": "/api/register"
+    }
+  ]
 }

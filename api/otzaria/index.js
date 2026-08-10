@@ -582,7 +582,7 @@ async function buildTeaserMessages(topic, index, total) {
   const content = sanitizeForSpeech(lastPost?.content);
 
   return [
-    { type: 'text', data: `פריט ${index + 1} מתוך ${total}`, removeInvalidChars: true },
+    { type: 'text', data: `פוסט ${index + 1} מתוך ${total}`, removeInvalidChars: true },
     { type: 'text', data: `בנושא: ${sanitizeForSpeech(topic.title || 'ללא כותרת')}`, removeInvalidChars: true },
     { type: 'text', data: `מאת ${sanitizeForSpeech(authorName)}`, removeInvalidChars: true },
     { type: 'date', data: dateStr },
@@ -730,7 +730,8 @@ async function recentTopicsFlow(call, page) {
     onOpen: (t) => topicFlow(call, t.tid, t.slug || '', 1, 0),
     onNextPage: () => recentTopicsFlow(call, page + 1),
     onPrevPage: page > 1 ? () => recentTopicsFlow(call, page - 1) : null,
-    context: `recenttopics:${page}`
+    context: `recenttopics:${page}`,
+    itemLabel: 'נושא'
   });
 }
 
@@ -957,10 +958,10 @@ async function notificationsFlow(call) {
 async function announceNewNotifications(call) {
   try {
     const sub = await getTzintukSubscription(call.phone, FORUM_SYSTEM_ID);
-    if (!sub?.enabled) return;
+    if (!sub?.enabled) return false;
 
     const creds = await getUserCredentials(call.phone, FORUM_SYSTEM_ID);
-    if (!creds) return;
+    if (!creds) return false;
 
     const userCookie = await loginAsUser(creds.username, creds.password);
     const data = await fetchUserNotifications(userCookie);
@@ -973,14 +974,27 @@ async function announceNewNotifications(call) {
     }).length;
 
     if (newCount > 0) {
+      // id_list_message הוא directive סופי (מסיים את תור ה-HTTP הנוכחי) -
+      // הוא זורק ExitError לאחר השליחה, שזו התנהגות תקינה של yemot-router2
+      // ולא שגיאה אמיתית. אסור לקרוא לפעולה נוספת (למשל read) באותו תור
+      // אחרי id_list_message - ולכן הקריאה הזו *לא* נתפסת כאן כשגיאה, אלא
+      // מוחזרת לקריאה של return true בבלוק ה-catch למטה, כדי שהקורא (main
+      // menu) ידע לעצור את התור הנוכחי ולא ימשיך ללולאת ה-read.
       await call.id_list_message([
         { type: 'text', data: 'יש לך', removeInvalidChars: true },
         { type: 'number', data: String(newCount) },
         { type: 'text', data: 'התראות חדשות, לשמיעה הקישו 5', removeInvalidChars: true }
       ]);
+      return true;
     }
+    return false;
   } catch (err) {
+    if (err instanceof ExitError) {
+      // צפוי: id_list_message סיים את התור בהצלחה. לא שגיאה.
+      return true;
+    }
     console.error('[announceNewNotifications] שגיאה בבדיקת מונה התראות חדשות', err.message);
+    return false;
   }
 }
 
@@ -1171,7 +1185,8 @@ async function voiceSearchFlow(call) {
     onOpen: (t) => topicFlow(call, t.tid, t.slug || '', 1, 0),
     onNextPage: () => voiceSearchResultsPage(call, queryText, 2),
     onPrevPage: null,
-    context: `voicesearch:${queryText}:1`
+    context: `voicesearch:${queryText}:1`,
+    itemLabel: 'נושא'
   });
 }
 
@@ -1199,7 +1214,8 @@ async function voiceSearchResultsPage(call, queryText, page) {
     onOpen: (t) => topicFlow(call, t.tid, t.slug || '', 1, 0),
     onNextPage: () => voiceSearchResultsPage(call, queryText, page + 1),
     onPrevPage: page > 1 ? () => voiceSearchResultsPage(call, queryText, page - 1) : null,
-    context: `voicesearch:${queryText}:${page}`
+    context: `voicesearch:${queryText}:${page}`,
+    itemLabel: 'נושא'
   });
 }
 
@@ -1208,9 +1224,14 @@ async function voiceSearchResultsPage(call, queryText, page) {
  * שהועבר - כותרת+מטא, או תוכן ה-teaser), ומאפשרת ניווט 9/7/0/* ובחירת נושא
  * לפי מספרו הסידורי ברשימה. חוזרת (return) כשהמסך הזה סיים - לא קופצת עם go_to_folder.
  */
-async function browseTopicList(call, topics, { onOpen, onNextPage, onPrevPage, context, buildMessages }) {
+async function browseTopicList(call, topics, { onOpen, onNextPage, onPrevPage, context, buildMessages, itemLabel }) {
+  // תיקון: "פריט X מתוך X" היה גנרי מדי ולא הבהיר למשתמש האם הוא מאזין
+  // לרשימת פוסטים אחרונים, נושאים אחרונים או תוצאות חיפוש. עכשיו כל קורא
+  // ל-browseTopicList מעביר itemLabel מתאים ("פוסט"/"נושא"), עם "נושא"
+  // כברירת מחדל (משמש גם את recentTopicsFlow וגם את תוצאות החיפוש הקולי).
+  const label = itemLabel || 'נושא';
   const buildFn = buildMessages || ((topic, i, total) => [
-    { type: 'text', data: `פריט ${i + 1} מתוך ${total}`, removeInvalidChars: true },
+    { type: 'text', data: `${label} ${i + 1} מתוך ${total}`, removeInvalidChars: true },
     ...buildTopicHeaderMessages(topic)
   ]);
 
@@ -1347,7 +1368,8 @@ async function categoryFlow(call, cid, slugParam, page, catName) {
     onOpen: (t) => topicFlow(call, t.tid, t.slug || '', 1, 0),
     onNextPage: () => categoryFlow(call, cid, slugParam, page + 1, name),
     onPrevPage: page > 1 ? () => categoryFlow(call, cid, slugParam, page - 1, name) : null,
-    context: `category:${cid}:${page}`
+    context: `category:${cid}:${page}`,
+    itemLabel: 'נושא'
   });
 }
 
@@ -1459,7 +1481,14 @@ router.get('/', async (call) => {
   // הכרזת "יש לך X התראות חדשות" - פעם אחת בלבד בתחילת השיחה, *לפני*
   // כניסה ללולאת התפריט, ולכן לא חוזרת על עצמה בכל GoToMainMenu (ר' תיעוד
   // announceNewNotifications). best-effort בלבד - לעולם לא חוסמת את התפריט.
-  await announceNewNotifications(call);
+  // תיקון: id_list_message הוא directive סופי לתור ה-HTTP הנוכחי - אסור
+  // לקרוא ל-call.read מיד אחריו באותו תור (הדבר גרם לשתי תגובות/directives
+  // באותה קריאת HTTP וללוג שגיאה מטעה). כאשר בוצעה הכרזה, מסיימים את התור
+  // הנוכחי כאן; ימות תפנה שוב לראוטר בבקשת ה-HTTP הבאה, ואז אין יותר
+  // התראות "חדשות" לא-מוכרזות ולכן annouceNewNotifications תחזיר false
+  // והתפריט הראשי יוקרא כרגיל.
+  const announced = await announceNewNotifications(call);
+  if (announced) return;
 
   // לולאה אינסופית: כל בחירה בתפריט מפעילה פונקציה פנימית; GoToMainMenu מחזיר לכאן.
   // אין ולו קריאה אחת ל-call.go_to_folder בקוד הזה - הניווט כולו פנימי.

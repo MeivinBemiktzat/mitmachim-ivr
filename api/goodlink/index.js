@@ -65,11 +65,11 @@ const {
   unsubscribeFromTzintuk,
   getTzintukSubscription
 } = require('../../lib/userStore');
-// שלוחה 9->3: הזנת מפתח/מפתחות AI (Gemini) מהטלפון, לשימוש עתידי בסיכום
-// נושאים בבינה מלאכותית - ר' aiKeyEntryFlow למטה. תיקון קריטי: aiKeyStore
-// היה קיים בפרויקט (משותף לכל הפורומים) אך לא נקרא כלל מקובץ זה - לא הייתה
-// כל דרך למשתמשי פורום גוד לינק להזין מפתח AI.
-const { saveAiKeys } = require('../../lib/aiKeyStore');
+// שלוחה 9->3: הזנת מפתח/מפתחות AI (Gemini) מהטלפון - ר' aiKeyEntryFlow
+// למטה. נעשה בו שימוש בפועל בתוך אשכול (מקש 8, ר' aiSummaryFlow) להפקת
+// סיכום קולי של הנושא באמצעות Gemini API.
+const { getAiKeys, saveAiKeys } = require('../../lib/aiKeyStore');
+const { summarizeTopic } = require('../../lib/geminiSummarizer');
 
 /* ============================================================
  * 1. תשתית כללית
@@ -519,6 +519,25 @@ function sanitizeForSpeech(raw) {
   return text;
 }
 
+/** ניקוי טקסט הודעה לצורך *סיכום AI* (ולא הקראה ישירה): מסיר תגי HTML
+ *  ורווחים מיותרים, אך שומר על הטקסט המלא (בלי החלפת קישורים ב"קישור"
+ *  ובלי חיתוך ל-1200 תו כמו sanitizeForSpeech) - כי כאן הטקסט נשלח למודל
+ *  שפה, לא למנוע ההקראה, וההגבלה הכוללת על אורך המקור נעשית במקום אחד
+ *  מרוכז (MAX_SOURCE_CHARS ב-geminiSummarizer.js). */
+function stripHtmlForSummary(raw) {
+  if (!raw) return '';
+  return String(raw)
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+
 /** בונה מערך messages להקראת כותרת פוסט/נושא כולל מטא-דאטה (מחבר, תאריך, תגובות). */
 function buildTopicHeaderMessages(topic) {
   const authorName = topic.user?.displayname || topic.user?.username || 'אנונימי';
@@ -644,6 +663,16 @@ const NAV_HINT = 'הקישו 9 להבא, 7 לקודם, 0 לחזרה, כוכבי�
 function navHintMessage() {
   return { type: 'text', data: NAV_HINT, removeInvalidChars: true };
 }
+
+// רמז ניווט ייעודי לתוך אשכול (topicFlow) בלבד - כולל את מקש 8 לסיכום
+// הנושא בבינה מלאכותית, שרלוונטי אך ורק כאן (לא בשאר רשימות הניווט, שם
+// אין תוכן נושא לסכם). ר' aiSummaryFlow ותיעוד בחירת המקש בראש topicFlow.
+const TOPIC_NAV_HINT = 'הקישו 9 להבא, 7 לקודם, 8 לסיכום הנושא בבינה מלאכותית, 0 לחזרה, כוכבית לתפריט הראשי';
+
+function topicNavHintMessage() {
+  return { type: 'text', data: TOPIC_NAV_HINT, removeInvalidChars: true };
+}
+
 
 /** אפשרויות read סטנדרטיות לתפריטי הקשה (תפריט עם ספרה בודדת). */
 const MENU_READ_OPTS = {
@@ -1401,6 +1430,97 @@ async function subcategoriesFlow(call, children, parentName) {
   throw new GoToMainMenu();
 }
 
+/* ---------- סיכום נושא בבינה מלאכותית (מקש 8 בתוך אשכול) ---------- */
+
+/**
+ * מפיק ומקריא סיכום קולי של נושא שלם (כל עמודיו) באמצעות Gemini API, לפי
+ * מפתח/מפתחות ה-AI שהמשתמש שמר מראש (לפי מספר טלפון בלבד, ר' aiKeyStore.js
+ * ואתר ההרשמה/aiKeyEntryFlow). מופעל מתוך topicFlow בהקשת מקש 8.
+ *
+ * טווח הסיכום: הנושא *כולו* (כל העמודים), לא רק העמוד הנוכחי - נשלפות כל
+ * ההודעות מכל עמודי האשכול, מרוכזות לטקסט אחד (מנוקה מ-HTML), ונשלחות
+ * ל-Gemini (ר' geminiSummarizer.js).
+ *
+ * הערה קריטית: אין לשלוח הודעת "אנא המתינו" חוצצת לפני איסוף הנתונים
+ * והקריאה ל-Gemini. id_list_message הוא directive סופי שמסיים את תור
+ * ה-HTTP הנוכחי לגמרי מול ימות - אם הייתה נשלחת כאן הודעת ביניים כזו
+ * (ללא prependToNextAction), התור היה מסתיים מיד אחריה וכל מה שאחריה
+ * (שליפת שאר העמודים, הקריאה בפועל ל-Gemini, והקראת הסיכום עצמו) לא היה
+ * מתרחש באותה פנייה בכלל - מה שהיה נשמע כאילו המערכת "אומרת שהיא מכינה
+ * סיכום ואז זורקת בחזרה לתפריט הראשי". לכן כל התהליך (כולל קריאת הרשת
+ * ל-Gemini) מתבצע כאן בתוך אותו תור HTTP יחיד, וההודעה היחידה שנשלחת
+ * בפועל היא תוצאת הסיכום עצמו בסוף הפונקציה (maxDuration=25 שניות
+ * מוגדר ב-vercel.json).
+ *
+ * הגבלת עמודים (MAX_SUMMARY_PAGES): הגנה מפני אשכולות ארוכים במיוחד -
+ * מסכמים עד מספר עמודים סביר כדי לא לחרוג מזמן הריצה/עלות.
+ */
+const MAX_SUMMARY_PAGES = 10;
+
+async function aiSummaryFlow(call, tid, slugParam, firstPageData) {
+  // 1. שליפת מפתחות ה-AI של המתקשר (לפי טלפון בלבד).
+  let keys = [];
+  try {
+    keys = await getAiKeys(call.phone);
+  } catch (err) {
+    console.error('[aiSummaryFlow] שגיאה בשליפת מפתחות AI', err.message);
+  }
+
+  if (!keys || keys.length === 0) {
+    return call.id_list_message([
+      { type: 'text', data: 'לא נמצא מפתח בינה מלאכותית עבור המספר שלכם', removeInvalidChars: true },
+      { type: 'text', data: 'כדי להשתמש בסיכום נושאים, אנא היכנסו לאתר ההרשמה, או הקישו כוכבית ולאחר מכן 9 ואז 3 להזנת מפתח דרך הטלפון', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  // 2. איסוף כל הודעות הנושא מכל עמודיו (עד MAX_SUMMARY_PAGES).
+  const topicTitle = firstPageData?.title || '';
+  const pageCount = Math.min(firstPageData?.pagination?.pageCount || 1, MAX_SUMMARY_PAGES);
+  const allPosts = [];
+  // עמוד ראשון כבר נשלף ע"י topicFlow - שימוש חוזר בו כדי לחסוך קריאה.
+  if (Array.isArray(firstPageData?.posts)) allPosts.push(...firstPageData.posts);
+
+  for (let p = 2; p <= pageCount; p++) {
+    try {
+      const pageData = await fetchTopic(tid, slugParam, p);
+      if (Array.isArray(pageData?.posts)) allPosts.push(...pageData.posts);
+    } catch (err) {
+      console.error(`[aiSummaryFlow] שגיאה בשליפת עמוד ${p} של הנושא`, err.message);
+      // ממשיכים עם מה שכן נשלף עד כה - סיכום חלקי עדיף על כישלון מלא.
+      break;
+    }
+  }
+
+  // 3. הרכבת טקסט מקור מנוקה מ-HTML (ללא metadata - רק תוכן ההודעות).
+  const postsText = allPosts
+    .map((post) => stripHtmlForSummary(post.content))
+    .filter(Boolean)
+    .join('\n\n');
+
+  if (!postsText.trim()) {
+    return call.id_list_message([
+      { type: 'text', data: 'לא נמצא תוכן טקסטואלי בנושא זה לסיכום', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  // 4. קריאה ל-Gemini (עם fallback בין המפתחות, ר' geminiSummarizer.js).
+  let summary;
+  try {
+    summary = await summarizeTopic(keys, topicTitle, postsText);
+  } catch (err) {
+    console.error('[aiSummaryFlow] שגיאה בהפקת סיכום', err.message);
+    return call.id_list_message([
+      { type: 'text', data: 'לא הצלחנו להפיק סיכום כרגע, יתכן שהמפתח אינו תקין או שחרגתם מהמכסה. אנא נסו שוב מאוחר יותר', removeInvalidChars: true }
+    ], { prependToNextAction: true });
+  }
+
+  // 5. הקראת הסיכום (sanitizeForSpeech כרשת הגנה נוספת על פלט המודל).
+  return call.id_list_message([
+    { type: 'text', data: 'להלן סיכום הנושא', removeInvalidChars: true },
+    { type: 'text', data: sanitizeForSpeech(summary) || 'הסיכום התקבל ריק', removeInvalidChars: true }
+  ], { prependToNextAction: true });
+}
+
 /* ---------- אשכול: האזנה לכל ההודעות, מעבר בין הודעה להודעה, דילוג ---------- */
 
 async function topicFlow(call, tid, slugParam, page, startIdx) {
@@ -1428,7 +1548,7 @@ async function topicFlow(call, tid, slugParam, page, startIdx) {
   while (idx >= 0 && idx < posts.length) {
     const messages = [
       ...buildPostMessages(posts[idx], idx, posts.length),
-      navHintMessage()
+      topicNavHintMessage()
     ];
 
     const key = await call.read(messages, 'tap', { ...MENU_READ_OPTS, max_digits: 2, allow_empty: true, empty_val: '9' });
@@ -1447,6 +1567,13 @@ async function topicFlow(call, tid, slugParam, page, startIdx) {
       if (idx > 0) { idx--; continue; }
       if (page > 1) return topicFlow(call, tid, slugParam, page - 1, 0);
       continue; // כבר בהודעה הראשונה
+    }
+    // מקש 8: סיכום הנושא כולו בבינה מלאכותית (ר' aiSummaryFlow ותיעוד בחירת
+    // המקש שם). נבדק *לפני* דילוג הספרות למטה, כדי ש-8 תמיד תפעיל סיכום
+    // ולא תדלג להודעה מספר 8. לאחר הסיכום נשארים באותה הודעה נוכחית (continue).
+    if (key === '8') {
+      await aiSummaryFlow(call, tid, slugParam, data);
+      continue;
     }
     if (key === '0') return categoriesFlow(call);
     if (key === '*') throw new GoToMainMenu();
@@ -1469,7 +1596,8 @@ async function helpFlow(call) {
     { type: 'text', data: 'הקישו 7 לחזרה להודעה או לפריט הקודם', removeInvalidChars: true },
     { type: 'text', data: 'הקישו 0 לחזרה לתפריט הקטגוריות', removeInvalidChars: true },
     { type: 'text', data: 'הקישו כוכבית בכל עת לחזרה לתפריט הראשי', removeInvalidChars: true },
-    { type: 'text', data: 'בתוך אשכול, ניתן להקיש את מספר ההודעה כדי לדלג ישירות אליה', removeInvalidChars: true }
+    { type: 'text', data: 'בתוך אשכול, ניתן להקיש את מספר ההודעה כדי לדלג ישירות אליה', removeInvalidChars: true },
+    { type: 'text', data: 'בתוך אשכול, הקישו 8 לקבלת סיכום הנושא בבינה מלאכותית', removeInvalidChars: true }
   ], { prependToNextAction: true });
 }
 

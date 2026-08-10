@@ -57,6 +57,10 @@ const {
   subscribeToTzintuk,
   unsubscribeFromTzintuk
 } = require('../lib/userStore');
+// שמירת מפתח/מפתחות Gemini API לסיכום נושאים בבינה מלאכותית (מקש # בתוך
+// topicFlow בכל אחת מגרסאות ה-IVR, ר' aiSummaryFlow) - לפי מספר טלפון בלבד,
+// בלי תלות בפורום/שם משתמש/סיסמא. ר' תיעוד מפורט ב-lib/aiKeyStore.js.
+const { saveAiKeys } = require('../lib/aiKeyStore');
 
 /** רשימת הפורומים הנתמכים: value = מזהה system (תואם ל-userStore.js
  *  ולפרמטר FORUM_SYSTEM_ID/'mitmachim' בכל אחת מגרסאות ה-IVR), label = שם
@@ -87,12 +91,19 @@ function escapeHtml(str) {
 /** בונה את עמוד ה-HTML של הטופס, עם הודעת סטטוס אופציונלית (הצלחה/שגיאה)
  *  ועם שימור הבחירה הקודמת של פורום/מספר טלפון/שם משתמש (כדי שהמשתמש לא
  *  יצטרך למלא הכל מחדש רק כי שכח שדה אחד וקיבל שגיאת ולידציה). */
-function renderPage({ status, message, selectedSystem, phoneValue, usernameValue, tzintukChecked } = {}) {
+function renderPage({ status, message, selectedSystem, phoneValue, usernameValue, tzintukChecked, aiStatus, aiMessage, aiPhoneValue } = {}) {
   let banner = '';
   if (status === 'success') {
     banner = `<div class="banner success">${escapeHtml(message || 'הפרטים נשמרו בהצלחה!')}</div>`;
   } else if (status === 'error') {
     banner = `<div class="banner error">${escapeHtml(message || 'אירעה שגיאה, אנא נסו שוב.')}</div>`;
+  }
+
+  let aiBanner = '';
+  if (aiStatus === 'success') {
+    aiBanner = `<div class="banner success">${escapeHtml(aiMessage || 'מפתח/מפתחות ה-AI נשמרו בהצלחה!')}</div>`;
+  } else if (aiStatus === 'error') {
+    aiBanner = `<div class="banner error">${escapeHtml(aiMessage || 'אירעה שגיאה, אנא נסו שוב.')}</div>`;
   }
 
   const currentSystem = isValidSystem(selectedSystem) ? selectedSystem : SUPPORTED_SYSTEMS[0].value;
@@ -278,6 +289,28 @@ function renderPage({ status, message, selectedSystem, phoneValue, usernameValue
       הפרטים בכל עת על ידי מילוי הטופס מחדש (לכל פורום בנפרד).
     </div>
   </div>
+
+  <div class="card" style="margin-top: 20px;">
+    <h1>סיכום נושאים בבינה מלאכותית</h1>
+    <p class="subtitle">הזינו מספר פלאפון ומפתח/מפתחות Gemini API (אחד או יותר, כל אחד בשורה נפרדת - יאפשר מעבר אוטומטי למפתח הבא אם מפתח מסוים הגיע למכסה החינמית), כדי שתוכלו לקבל סיכום קולי אוטומטי של אשכולות בפורום (מקש # בתוך אשכול).</p>
+    ${aiBanner}
+    <form method="POST" action="/api/register/ai-key">
+      <label for="aiPhone">מספר פלאפון</label>
+      <input type="tel" id="aiPhone" name="phone" placeholder="05XXXXXXXX" value="${escapeHtml(aiPhoneValue || '')}" required>
+
+      <label for="aiKeys">מפתח/מפתחות Gemini API</label>
+      <textarea id="aiKeys" name="keys" rows="3" placeholder="מפתח אחד בכל שורה" required style="width:100%; padding:11px 12px; border:1px solid #d1d5db; border-radius:8px; font-size:15px; margin-bottom:18px; direction:ltr; text-align:left; font-family:inherit;"></textarea>
+
+      <button type="submit">שמירת מפתח/מפתחות</button>
+    </form>
+    <div class="note">
+      ניתן להשיג מפתח Gemini API בחינם בכתובת
+      <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.
+      המפתחות נשמרים אך ורק לצורך יצירת סיכום קולי בשיחה, ואינם קשורים
+      לפרטי ההתחברות לפורום שבטופס העליון. ניתן לעדכן בכל עת על ידי
+      מילוי הטופס מחדש - עדכון ידרוס את המפתחות הקודמים.
+    </div>
+  </div>
 </body>
 </html>`;
 }
@@ -368,6 +401,44 @@ app.post('/api/register', async (req, res) => {
     usernameValue: username,
     tzintukChecked
   }));
+});
+
+app.post('/api/register/ai-key', async (req, res) => {
+  const { phone, keys } = req.body || {};
+
+  if (!phone || !keys) {
+    return res.status(400).send(renderPage({
+      aiStatus: 'error',
+      aiMessage: 'יש למלא מספר פלאפון ומפתח/מפתחות AI לפחות אחד.',
+      aiPhoneValue: phone
+    }));
+  }
+
+  const normalizedPhone = normalizePhone(phone);
+  if (normalizedPhone.length < 9) {
+    return res.status(400).send(renderPage({
+      aiStatus: 'error',
+      aiMessage: 'מספר הפלאפון שהוזן אינו תקין, אנא בדקו ונסו שוב.'
+    }));
+  }
+
+  try {
+    const savedKeys = await saveAiKeys(phone, keys);
+    return res.status(200).send(renderPage({
+      aiStatus: 'success',
+      aiMessage: `נשמרו ${savedKeys.length} מפתח/מפתחות AI בהצלחה! כעת ניתן להתקשר ולהקיש # בתוך אשכול לקבלת סיכום.`,
+      aiPhoneValue: phone
+    }));
+  } catch (err) {
+    console.error('[register] שגיאה בשמירת מפתחות AI', err.message);
+    return res.status(500).send(renderPage({
+      aiStatus: 'error',
+      aiMessage: err.message === 'לא הוזן אף מפתח AI תקין'
+        ? 'לא זוהה אף מפתח תקין בשדה המפתחות, אנא בדקו ונסו שוב.'
+        : 'אירעה שגיאה בשמירת המפתחות, אנא נסו שוב מאוחר יותר.',
+      aiPhoneValue: phone
+    }));
+  }
 });
 
 if (require.main === module) {

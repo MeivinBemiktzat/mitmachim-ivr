@@ -88,10 +88,24 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
-/** בונה את עמוד ה-HTML של הטופס, עם הודעת סטטוס אופציונלית (הצלחה/שגיאה)
- *  ועם שימור הבחירה הקודמת של פורום/מספר טלפון/שם משתמש (כדי שהמשתמש לא
- *  יצטרך למלא הכל מחדש רק כי שכח שדה אחד וקיבל שגיאת ולידציה). */
-function renderPage({ status, message, selectedSystem, phoneValue, usernameValue, tzintukChecked, aiStatus, aiMessage, aiPhoneValue } = {}) {
+/** עמודי האתר: 'home' = מסך נחיתה עם שני כפתורים, 'forums' = טופס הרשמה
+ *  לפורומים (מספר טלפון + פורום + שם משתמש/סיסמא), 'ai' = טופס מפתחות
+ *  Gemini API לסיכום קולי. הבחירה מגיעה מפרמטר query בשם view, כדי שכל
+ *  מסך יהיה בכתובת נפרדת (ניתן לשתף/לסמן קישור ישיר לכל טופס בנפרד),
+ *  בלי צורך בראוטים נוספים או קובץ Express נפרד. */
+const VIEWS = ['home', 'forums', 'ai'];
+
+function resolveView(view) {
+  return VIEWS.includes(view) ? view : 'home';
+}
+
+/** בונה את עמוד ה-HTML (מסך נחיתה או אחד משני הטפסים), עם הודעת סטטוס
+ *  אופציונלית (הצלחה/שגיאה) ועם שימור הבחירה הקודמת של פורום/מספר
+ *  טלפון/שם משתמש (כדי שהמשתמש לא יצטרך למלא הכל מחדש רק כי שכח שדה
+ *  אחד וקיבל שגיאת ולידציה). */
+function renderPage({ view, status, message, selectedSystem, phoneValue, usernameValue, tzintukChecked, aiStatus, aiMessage, aiPhoneValue } = {}) {
+  const currentView = resolveView(view);
+
   let banner = '';
   if (status === 'success') {
     banner = `<div class="banner success">${escapeHtml(message || 'הפרטים נשמרו בהצלחה!')}</div>`;
@@ -112,6 +126,85 @@ function renderPage({ status, message, selectedSystem, phoneValue, usernameValue
         <input type="radio" name="system" value="${escapeHtml(s.value)}" ${s.value === currentSystem ? 'checked' : ''}>
         <span>${escapeHtml(s.label)}</span>
       </label>`).join('');
+
+  const homeHtml = `
+  <div class="landing">
+    <h1>המרכז הקולי שלכם לפורומים</h1>
+    <p class="subtitle">בחרו מה תרצו להגדיר - קישור מספר הטלפון לפורום כדי לשמוע התראות אישיות, או הפעלת סיכום נושאים בבינה מלאכותית.</p>
+    <div class="choice-grid">
+      <a class="choice-card" href="/api/register?view=forums">
+        <span class="choice-icon" aria-hidden="true">☎</span>
+        <span class="choice-title">הרשמה להתראות קוליות</span>
+        <span class="choice-desc">קשרו את מספר הפלאפון שלכם לחשבון בפורום, כדי לשמוע את ההתראות האישיות שלכם בשלוחה 5</span>
+      </a>
+      <a class="choice-card" href="/api/register?view=ai">
+        <span class="choice-icon" aria-hidden="true">✦</span>
+        <span class="choice-title">מפתחות Gemini API</span>
+        <span class="choice-desc">הזינו מפתח/מפתחות Gemini, כדי לקבל סיכום קולי אוטומטי של אשכולות בפורום</span>
+      </a>
+    </div>
+  </div>`;
+
+  const forumsHtml = `
+  <div class="card">
+    <a class="back-link" href="/api/register">&#8594; חזרה למסך הראשי</a>
+    <h1>הרשמה להתראות קוליות</h1>
+    <p class="subtitle">קשרו את מספר הפלאפון שלכם לחשבון שלכם באחד הפורומים, כדי שתוכלו לשמוע את ההתראות האישיות שלכם בשלוחה 5 בטלפון. ניתן להירשם למספר פורומים בנפרד (הגשה נפרדת לכל פורום).</p>
+    ${banner}
+    <form method="POST" action="/api/register">
+      <fieldset>
+        <legend>בחרו פורום</legend>
+        ${systemOptionsHtml}
+      </fieldset>
+
+      <label for="phone">מספר פלאפון</label>
+      <input type="tel" id="phone" name="phone" placeholder="05XXXXXXXX" value="${escapeHtml(phoneValue || '')}" required>
+
+      <label for="username">שם משתמש בפורום</label>
+      <input type="text" id="username" name="username" placeholder="שם המשתמש שלכם בפורום" value="${escapeHtml(usernameValue || '')}" required>
+
+      <label for="password">סיסמא בפורום</label>
+      <input type="password" id="password" name="password" placeholder="הסיסמא שלכם בפורום" required>
+
+      <label class="radio-option checkbox-option">
+        <input type="checkbox" id="tzintuk" name="tzintuk" ${tzintukChecked ? 'checked' : ''}>
+        <span>קבל צינתוק טלפוני על התראה חדשה (שיחה קצרה שמצלצלת אליכם כשיש התראה חדשה בשלוחה 5)</span>
+      </label>
+
+      <button type="submit">שמירה</button>
+    </form>
+    <div class="note">
+      הפרטים נשמרים אך ורק לצורך התחברות אוטומטית לפורום שנבחר בעת שיחה
+      משלוחה 5, כדי להקריא לכם את ההתראות האישיות שלכם. ניתן לעדכן את
+      הפרטים בכל עת על ידי מילוי הטופס מחדש (לכל פורום בנפרד).
+    </div>
+  </div>`;
+
+  const aiHtml = `
+  <div class="card">
+    <a class="back-link" href="/api/register">&#8594; חזרה למסך הראשי</a>
+    <h1>סיכום נושאים בבינה מלאכותית</h1>
+    <p class="subtitle">הזינו מספר פלאפון ומפתח/מפתחות Gemini API (אחד או יותר, כל אחד בשורה נפרדת - יאפשר מעבר אוטומטי למפתח הבא אם מפתח מסוים הגיע למכסה החינמית), כדי שתוכלו לקבל סיכום קולי אוטומטי של אשכולות בפורום (מקש # בתוך אשכול).</p>
+    ${aiBanner}
+    <form method="POST" action="/api/register/ai-key">
+      <label for="aiPhone">מספר פלאפון</label>
+      <input type="tel" id="aiPhone" name="phone" placeholder="05XXXXXXXX" value="${escapeHtml(aiPhoneValue || '')}" required>
+
+      <label for="aiKeys">מפתח/מפתחות Gemini API</label>
+      <textarea id="aiKeys" name="keys" rows="3" placeholder="מפתח אחד בכל שורה" required style="width:100%; padding:11px 12px; border:1px solid #d1d5db; border-radius:8px; font-size:15px; margin-bottom:18px; direction:ltr; text-align:left; font-family:inherit;"></textarea>
+
+      <button type="submit">שמירת מפתח/מפתחות</button>
+    </form>
+    <div class="note">
+      ניתן להשיג מפתח Gemini API בחינם בכתובת
+      <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.
+      המפתחות נשמרים אך ורק לצורך יצירת סיכום קולי בשיחה, ואינם קשורים
+      לפרטי ההתחברות לפורום שבטופס העליון. ניתן לעדכן בכל עת על ידי
+      מילוי הטופס מחדש - עדכון ידרוס את המפתחות הקודמים.
+    </div>
+  </div>`;
+
+  const bodyHtml = currentView === 'forums' ? forumsHtml : currentView === 'ai' ? aiHtml : homeHtml;
 
   return `<!DOCTYPE html>
 <html lang="he" dir="rtl">
@@ -143,6 +236,68 @@ function renderPage({ status, message, selectedSystem, phoneValue, usernameValue
     padding: 32px 16px;
     min-height: 100vh;
   }
+  .landing {
+    max-width: 640px;
+    width: 100%;
+    text-align: center;
+  }
+  .landing h1 {
+    font-size: 26px;
+    margin: 8px 0 10px;
+  }
+  .landing .subtitle {
+    color: var(--muted);
+    font-size: 15.5px;
+    line-height: 1.6;
+    margin: 0 0 32px;
+  }
+  .choice-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+  }
+  @media (max-width: 560px) {
+    .choice-grid { grid-template-columns: 1fr; }
+  }
+  .choice-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    background: var(--card-bg);
+    border: 1px solid #e5e7eb;
+    border-radius: 14px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.06);
+    padding: 30px 20px;
+    text-decoration: none;
+    color: var(--text);
+    transition: transform 0.15s, box-shadow 0.15s, border-color 0.15s;
+  }
+  .choice-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 8px 28px rgba(37,99,235,0.15);
+    border-color: var(--primary);
+  }
+  .choice-icon {
+    font-size: 30px;
+    width: 56px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: #eff6ff;
+    color: var(--primary);
+  }
+  .choice-title {
+    font-size: 17px;
+    font-weight: 700;
+  }
+  .choice-desc {
+    font-size: 13.5px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
   .card {
     background: var(--card-bg);
     border-radius: 14px;
@@ -151,6 +306,15 @@ function renderPage({ status, message, selectedSystem, phoneValue, usernameValue
     max-width: 440px;
     width: 100%;
   }
+  .back-link {
+    display: inline-block;
+    color: var(--primary);
+    text-decoration: none;
+    font-size: 13.5px;
+    font-weight: 600;
+    margin-bottom: 14px;
+  }
+  .back-link:hover { text-decoration: underline; }
   h1 {
     font-size: 22px;
     margin: 0 0 8px;
@@ -257,60 +421,7 @@ function renderPage({ status, message, selectedSystem, phoneValue, usernameValue
 </style>
 </head>
 <body>
-  <div class="card">
-    <h1>הרשמה להתראות קוליות</h1>
-    <p class="subtitle">קשרו את מספר הפלאפון שלכם לחשבון שלכם באחד הפורומים, כדי שתוכלו לשמוע את ההתראות האישיות שלכם בשלוחה 5 בטלפון. ניתן להירשם למספר פורומים בנפרד (הגשה נפרדת לכל פורום).</p>
-    ${banner}
-    <form method="POST" action="/api/register">
-      <fieldset>
-        <legend>בחרו פורום</legend>
-        ${systemOptionsHtml}
-      </fieldset>
-
-      <label for="phone">מספר פלאפון</label>
-      <input type="tel" id="phone" name="phone" placeholder="05XXXXXXXX" value="${escapeHtml(phoneValue || '')}" required>
-
-      <label for="username">שם משתמש בפורום</label>
-      <input type="text" id="username" name="username" placeholder="שם המשתמש שלכם בפורום" value="${escapeHtml(usernameValue || '')}" required>
-
-      <label for="password">סיסמא בפורום</label>
-      <input type="password" id="password" name="password" placeholder="הסיסמא שלכם בפורום" required>
-
-      <label class="radio-option checkbox-option">
-        <input type="checkbox" id="tzintuk" name="tzintuk" ${tzintukChecked ? 'checked' : ''}>
-        <span>קבל צינתוק טלפוני על התראה חדשה (שיחה קצרה שמצלצלת אליכם כשיש התראה חדשה בשלוחה 5)</span>
-      </label>
-
-      <button type="submit">שמירה</button>
-    </form>
-    <div class="note">
-      הפרטים נשמרים אך ורק לצורך התחברות אוטומטית לפורום שנבחר בעת שיחה
-      משלוחה 5, כדי להקריא לכם את ההתראות האישיות שלכם. ניתן לעדכן את
-      הפרטים בכל עת על ידי מילוי הטופס מחדש (לכל פורום בנפרד).
-    </div>
-  </div>
-
-  <div class="card" style="margin-top: 20px;">
-    <h1>סיכום נושאים בבינה מלאכותית</h1>
-    <p class="subtitle">הזינו מספר פלאפון ומפתח/מפתחות Gemini API (אחד או יותר, כל אחד בשורה נפרדת - יאפשר מעבר אוטומטי למפתח הבא אם מפתח מסוים הגיע למכסה החינמית), כדי שתוכלו לקבל סיכום קולי אוטומטי של אשכולות בפורום (מקש # בתוך אשכול).</p>
-    ${aiBanner}
-    <form method="POST" action="/api/register/ai-key">
-      <label for="aiPhone">מספר פלאפון</label>
-      <input type="tel" id="aiPhone" name="phone" placeholder="05XXXXXXXX" value="${escapeHtml(aiPhoneValue || '')}" required>
-
-      <label for="aiKeys">מפתח/מפתחות Gemini API</label>
-      <textarea id="aiKeys" name="keys" rows="3" placeholder="מפתח אחד בכל שורה" required style="width:100%; padding:11px 12px; border:1px solid #d1d5db; border-radius:8px; font-size:15px; margin-bottom:18px; direction:ltr; text-align:left; font-family:inherit;"></textarea>
-
-      <button type="submit">שמירת מפתח/מפתחות</button>
-    </form>
-    <div class="note">
-      ניתן להשיג מפתח Gemini API בחינם בכתובת
-      <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.
-      המפתחות נשמרים אך ורק לצורך יצירת סיכום קולי בשיחה, ואינם קשורים
-      לפרטי ההתחברות לפורום שבטופס העליון. ניתן לעדכן בכל עת על ידי
-      מילוי הטופס מחדש - עדכון ידרוס את המפתחות הקודמים.
-    </div>
-  </div>
+${bodyHtml}
 </body>
 </html>`;
 }
@@ -320,8 +431,8 @@ app.disable('x-powered-by');
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-app.get('/api/register', (_req, res) => {
-  res.status(200).send(renderPage());
+app.get('/api/register', (req, res) => {
+  res.status(200).send(renderPage({ view: req.query?.view }));
 });
 
 app.post('/api/register', async (req, res) => {
@@ -332,6 +443,7 @@ app.post('/api/register', async (req, res) => {
 
   if (!phone || !system || !username || !password) {
     return res.status(400).send(renderPage({
+      view: 'forums',
       status: 'error',
       message: 'יש למלא את כל השדות: בחירת פורום, מספר פלאפון, שם משתמש וסיסמא.',
       selectedSystem: system,
@@ -343,6 +455,7 @@ app.post('/api/register', async (req, res) => {
 
   if (!isValidSystem(system)) {
     return res.status(400).send(renderPage({
+      view: 'forums',
       status: 'error',
       message: 'הפורום שנבחר אינו תקין, אנא בחרו שוב.',
       phoneValue: phone,
@@ -354,6 +467,7 @@ app.post('/api/register', async (req, res) => {
   const normalizedPhone = normalizePhone(phone);
   if (normalizedPhone.length < 9) {
     return res.status(400).send(renderPage({
+      view: 'forums',
       status: 'error',
       message: 'מספר הפלאפון שהוזן אינו תקין, אנא בדקו ונסו שוב.',
       selectedSystem: system,
@@ -369,6 +483,7 @@ app.post('/api/register', async (req, res) => {
   } catch (err) {
     console.error('[register] שגיאה בשמירת פרטי משתמש', err.message);
     return res.status(500).send(renderPage({
+      view: 'forums',
       status: 'error',
       message: 'אירעה שגיאה בשמירת הפרטים, אנא נסו שוב מאוחר יותר.',
       selectedSystem: system,
@@ -394,6 +509,7 @@ app.post('/api/register', async (req, res) => {
   }
 
   return res.status(200).send(renderPage({
+    view: 'forums',
     status: 'success',
     message: `הפרטים נשמרו בהצלחה עבור ${systemLabel}! כעת ניתן להתקשר ולהיכנס לשלוחה 5 לשמיעת ההתראות שלכם.${tzintukWarning}`,
     selectedSystem: system,
@@ -408,6 +524,7 @@ app.post('/api/register/ai-key', async (req, res) => {
 
   if (!phone || !keys) {
     return res.status(400).send(renderPage({
+      view: 'ai',
       aiStatus: 'error',
       aiMessage: 'יש למלא מספר פלאפון ומפתח/מפתחות AI לפחות אחד.',
       aiPhoneValue: phone
@@ -417,6 +534,7 @@ app.post('/api/register/ai-key', async (req, res) => {
   const normalizedPhone = normalizePhone(phone);
   if (normalizedPhone.length < 9) {
     return res.status(400).send(renderPage({
+      view: 'ai',
       aiStatus: 'error',
       aiMessage: 'מספר הפלאפון שהוזן אינו תקין, אנא בדקו ונסו שוב.'
     }));
@@ -425,6 +543,7 @@ app.post('/api/register/ai-key', async (req, res) => {
   try {
     const savedKeys = await saveAiKeys(phone, keys);
     return res.status(200).send(renderPage({
+      view: 'ai',
       aiStatus: 'success',
       aiMessage: `נשמרו ${savedKeys.length} מפתח/מפתחות AI בהצלחה! כעת ניתן להתקשר ולהקיש # בתוך אשכול לקבלת סיכום.`,
       aiPhoneValue: phone
@@ -432,6 +551,7 @@ app.post('/api/register/ai-key', async (req, res) => {
   } catch (err) {
     console.error('[register] שגיאה בשמירת מפתחות AI', err.message);
     return res.status(500).send(renderPage({
+      view: 'ai',
       aiStatus: 'error',
       aiMessage: err.message === 'לא הוזן אף מפתח AI תקין'
         ? 'לא זוהה אף מפתח תקין בשדה המפתחות, אנא בדקו ונסו שוב.'

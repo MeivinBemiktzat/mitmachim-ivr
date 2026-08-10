@@ -545,7 +545,7 @@ app.post('/api/register/ai-key', async (req, res) => {
     return res.status(200).send(renderPage({
       view: 'ai',
       aiStatus: 'success',
-      aiMessage: `נשמרו ${savedKeys.length} מפתח/מפתחות AI בהצלחה! כעת ניתן להתקשר ולהקיש # בתוך אשכול לקבלת סיכום.`,
+      aiMessage: `נשמרו ${savedKeys.length} מפתחות AI בהצלחה! כעת ניתן להתקשר ולהקיש 8 בתוך אשכול לקבלת סיכום.`,
       aiPhoneValue: phone
     }));
   } catch (err) {

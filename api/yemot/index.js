@@ -993,14 +993,23 @@ async function tzintukSettingsFlow(call) {
  * רצה פעם אחת בלבד בתחילת השיחה (מחוץ ל-for(;;) בתפריט הראשי) ולא בכל
  * חזרה ללולאה, כדי לא לחזור על ההכרזה בכל GoToMainMenu. best-effort: כל
  * שגיאה (רשת/התחברות) נלכדת ומתעלמת - אף פעם לא חוסמת את המשך השיחה.
+ *
+ * תיקון באג (הכרזה ואז ניתוק/חזרה לתפריט): בעבר ה-id_list_message כאן
+ * נשלח *ללא* prependToNextAction, כלומר היה directive סופי שמסיים את תור
+ * ה-HTTP הנוכחי לגמרי - ימות היה משמיע את ההכרזה ואז מחכה לבקשת HTTP
+ * הבאה, בלי שהתפריט הראשי (call.read) ��פעם הוצג באותו תור. בפועל זה
+ * נשמע/התנהג כאילו המערכת "אומרת את ההכרזה וחוזרת לתפריט הראשי" (כי
+ * בקריאה הבאה שוב מגיעים לראוטר הזה מההתחלה). התיקון: משתמשים ב-
+ * prependToNextAction: true, כך שההכרזה רק "נדחפת" לפני ה-directive הבא
+ * (תפריט הראשי) באותו תור HTTP, בלי לזרוק ExitError ובלי לסיים את התור.
  */
 async function announceNewNotifications(call) {
   try {
     const sub = await getTzintukSubscription(call.phone, FORUM_SYSTEM_ID);
-    if (!sub?.enabled) return false;
+    if (!sub?.enabled) return;
 
     const creds = await getUserCredentials(call.phone, FORUM_SYSTEM_ID);
-    if (!creds) return false;
+    if (!creds) return;
 
     const userCookie = await loginAsUser(creds.username, creds.password);
     const data = await fetchUserNotifications(userCookie);
@@ -1013,27 +1022,17 @@ async function announceNewNotifications(call) {
     }).length;
 
     if (newCount > 0) {
-      // id_list_message הוא directive סופי (מסיים את תור ה-HTTP הנוכחי) -
-      // הוא זורק ExitError לאחר השליחה, שזו התנהגות תקינה של yemot-router2
-      // ולא שגיאה אמיתית. אסור לקרוא לפעולה נוספת (למשל read) באותו תור
-      // אחרי id_list_message - ולכן הקריאה הזו *לא* נתפסת כאן כשגיאה, אלא
-      // מוחזרת לקריאה של return true בבלוק ה-catch למטה, כדי שהקורא (main
-      // menu) ידע לעצור את התור הנוכחי ולא ימשיך ללולאת ה-read.
+      // prependToNextAction: true - ההודעה תושמע לפני ה-read של תפריט
+      // הראשי (שמתבצע מיד אחרי הקריאה לפונקציה זו), *באותו* תור HTTP -
+      // ולא מסיימת את התור בעצמה. כך אין עוד "ניתוק" אחרי ההכרזה.
       await call.id_list_message([
         { type: 'text', data: 'יש לך', removeInvalidChars: true },
         { type: 'number', data: String(newCount) },
         { type: 'text', data: 'התראות חדשות, לשמיעה הקישו 5', removeInvalidChars: true }
-      ]);
-      return true;
+      ], { prependToNextAction: true });
     }
-    return false;
   } catch (err) {
-    if (err instanceof ExitError) {
-      // צפוי: id_list_message סיים את התור בהצלחה. לא שגיאה.
-      return true;
-    }
     console.error('[announceNewNotifications] שגיאה בבדיקת מונה התראות חדשות', err.message);
-    return false;
   }
 }
 
@@ -1710,14 +1709,11 @@ router.get('/', async (call) => {
   // הכרזת "יש לך X התראות חדשות" - פעם אחת בלבד בתחילת השיחה, *לפני*
   // כניסה ללולאת התפריט, ולכן לא חוזרת על עצמה בכל GoToMainMenu (ר' תיעוד
   // announceNewNotifications). best-effort בלבד - לעולם לא חוסמת את התפריט.
-  // תיקון באג: id_list_message הוא directive סופי לתור ה-HTTP הנוכחי - אסור
-  // לקרוא ל-call.read מיד אחריו באותו תור (הדבר גרם לשתי תגובות/directives
-  // באותה קריאת HTTP וללוג שגיאה מטעה). כאשר בוצעה הכרזה, מסיימים את התור
-  // הנוכחי כאן; ימות תפנה שוב לראוטר בבקשת ה-HTTP הבאה, ואז אין יותר
-  // התראות "חדשות" לא-מוכרזות ולכן annouceNewNotifications תחזיר false
-  // והתפריט הראשי יוקרא כרגיל.
-  const announced = await announceNewNotifications(call);
-  if (announced) return;
+  // תיקון באג: ההכרזה (אם יש) נדחפת (prependToNextAction) לפני ה-read של
+  // תפריט הראשי הבא, באותו תור HTTP - ולכן ממשיכים תמיד ישירות ללולאת
+  // התפריט, בלי return מוקדם. כך המשתמש שומע את ההכרזה ומיד אחריה את
+  // תפריט הראשי עצמו, במקום להישמע כמנותקת/חוזרת לתפריט בשיחה הבאה.
+  await announceNewNotifications(call);
 
   // לולאה אינסופית: כל בחירה בתפריט מפעילה פונקציה פנימית; GoToMainMenu מחזיר לכאן.
   // אין ולו קריאה אחת ל-call.go_to_folder בקוד הזה - הניווט כולו פנימי.
@@ -1744,6 +1740,10 @@ router.get('/', async (call) => {
         case '5': await notificationsFlow(call); break;
         case '6': await helpFlow(call); break;
         case '9': await settingsFlow(call); break;
+        // תיקון: הקשה 0 בתפריט הראשי חוזרת (מפורשות) לתפריט הראשי עצמו -
+        // עקבי עם המשמעות של מקש 0 בכל תת-תפריט אחר במערכת (ר' GoToMainMenu
+        // בקטגוריות, נושאים, אשכולות, התראות והגדרות).
+        case '0': throw new GoToMainMenu();
         default: break; // הקשה לא מוכרת - חוזר לתפריט הראשי
       }
     } catch (err) {

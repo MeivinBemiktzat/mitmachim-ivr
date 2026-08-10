@@ -996,10 +996,10 @@ async function tzintukSettingsFlow(call) {
 async function announceNewNotifications(call) {
   try {
     const sub = await getTzintukSubscription(call.phone, FORUM_SYSTEM_ID);
-    if (!sub?.enabled) return;
+    if (!sub?.enabled) return false;
 
     const creds = await getUserCredentials(call.phone, FORUM_SYSTEM_ID);
-    if (!creds) return;
+    if (!creds) return false;
 
     const userCookie = await loginAsUser(creds.username, creds.password);
     const data = await fetchUserNotifications(userCookie);
@@ -1012,14 +1012,27 @@ async function announceNewNotifications(call) {
     }).length;
 
     if (newCount > 0) {
+      // id_list_message הוא directive סופי (מסיים את תור ה-HTTP הנוכחי) -
+      // הוא זורק ExitError לאחר השליחה, שזו התנהגות תקינה של yemot-router2
+      // ולא שגיאה אמיתית. אסור לקרוא לפעולה נוספת (למשל read) באותו תור
+      // אחרי id_list_message - ולכן הקריאה הזו *לא* נתפסת כאן כשגיאה, אלא
+      // מוחזרת לקריאה של return true בבלוק ה-catch למטה, כדי שהקורא (main
+      // menu) ידע לעצור את התור הנוכחי ולא ימשיך ללולאת ה-read.
       await call.id_list_message([
         { type: 'text', data: 'יש לך', removeInvalidChars: true },
         { type: 'number', data: String(newCount) },
         { type: 'text', data: 'התראות חדשות, לשמיעה הקישו 5', removeInvalidChars: true }
       ]);
+      return true;
     }
+    return false;
   } catch (err) {
+    if (err instanceof ExitError) {
+      // צפוי: id_list_message סיים את התור בהצלחה. לא שגיאה.
+      return true;
+    }
     console.error('[announceNewNotifications] שגיאה בבדיקת מונה התראות חדשות', err.message);
+    return false;
   }
 }
 
@@ -1688,7 +1701,14 @@ router.get('/', async (call) => {
   // הכרזת "יש לך X התראות חדשות" - פעם אחת בלבד בתחילת השיחה, *לפני*
   // כניסה ללולאת התפריט, ולכן לא חוזרת על עצמה בכל GoToMainMenu (ר' תיעוד
   // announceNewNotifications). best-effort בלבד - לעולם לא חוסמת את התפריט.
-  await announceNewNotifications(call);
+  // תיקון באג: id_list_message הוא directive סופי לתור ה-HTTP הנוכחי - אסור
+  // לקרוא ל-call.read מיד אחריו באותו תור (הדבר גרם לשתי תגובות/directives
+  // באותה קריאת HTTP וללוג שגיאה מטעה). כאשר בוצעה הכרזה, מסיימים את התור
+  // הנוכחי כאן; ימות תפנה שוב לראוטר בבקשת ה-HTTP הבאה, ואז אין יותר
+  // התראות "חדשות" לא-מוכרזות ולכן annouceNewNotifications תחזיר false
+  // והתפריט הראשי יוקרא כרגיל.
+  const announced = await announceNewNotifications(call);
+  if (announced) return;
 
   // לולאה אינסופית: כל בחירה בתפריט מפעילה פונקציה פנימית; GoToMainMenu מחזיר לכאן.
   // אין ולו קריאה אחת ל-call.go_to_folder בקוד הזה - הניווט כולו פנימי.

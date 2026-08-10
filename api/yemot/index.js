@@ -594,7 +594,7 @@ async function buildTeaserMessages(topic, index, total) {
   const content = sanitizeForSpeech(lastPost?.content);
 
   return [
-    { type: 'text', data: `פריט ${index + 1} מתוך ${total}`, removeInvalidChars: true },
+    { type: 'text', data: `פוסט ${index + 1} מתוך ${total}`, removeInvalidChars: true },
     { type: 'text', data: `בנושא: ${sanitizeForSpeech(topic.title || 'ללא כותרת')}`, removeInvalidChars: true },
     { type: 'text', data: `מאת ${sanitizeForSpeech(authorName)}`, removeInvalidChars: true },
     { type: 'date', data: dateStr },
@@ -751,7 +751,8 @@ async function recentTopicsFlow(call, page) {
     onOpen: (t) => topicFlow(call, t.tid, t.slug || '', 1, 0),
     onNextPage: () => recentTopicsFlow(call, page + 1),
     onPrevPage: page > 1 ? () => recentTopicsFlow(call, page - 1) : null,
-    context: `recenttopics:${page}`
+    context: `recenttopics:${page}`,
+    itemLabel: 'נושא'
   });
 }
 
@@ -1303,7 +1304,8 @@ async function voiceSearchFlow(call) {
     onOpen: (t) => topicFlow(call, t.tid, t.slug || '', 1, 0),
     onNextPage: () => voiceSearchResultsPage(call, queryText, 2),
     onPrevPage: null,
-    context: `voicesearch:${queryText}:1`
+    context: `voicesearch:${queryText}:1`,
+    itemLabel: 'נושא'
   });
 }
 
@@ -1331,7 +1333,8 @@ async function voiceSearchResultsPage(call, queryText, page) {
     onOpen: (t) => topicFlow(call, t.tid, t.slug || '', 1, 0),
     onNextPage: () => voiceSearchResultsPage(call, queryText, page + 1),
     onPrevPage: page > 1 ? () => voiceSearchResultsPage(call, queryText, page - 1) : null,
-    context: `voicesearch:${queryText}:${page}`
+    context: `voicesearch:${queryText}:${page}`,
+    itemLabel: 'נושא'
   });
 }
 
@@ -1340,9 +1343,14 @@ async function voiceSearchResultsPage(call, queryText, page) {
  * שהועבר - כותרת+מטא, או תוכן ה-teaser), ומאפשרת ניווט 9/7/0/* ובחירת נושא
  * לפי מספרו הסידורי ברשימה. חוזרת (return) כשהמסך הזה סיים - לא קופצת עם go_to_folder.
  */
-async function browseTopicList(call, topics, { onOpen, onNextPage, onPrevPage, context, buildMessages }) {
+async function browseTopicList(call, topics, { onOpen, onNextPage, onPrevPage, context, buildMessages, itemLabel }) {
+  // תיקון: "פריט X מתוך X" היה גנרי מדי ולא הבהיר למשתמש האם הוא מאזין
+  // לרשימת פוסטים אחרונים, נושאים אחרונים או תוצאות חיפוש. עכשיו כל קורא
+  // ל-browseTopicList מעביר itemLabel מתאים ("פוסט"/"נושא"), עם "נושא"
+  // כברירת מחדל (משמש גם את recentTopicsFlow וגם את תוצאות החיפוש הקולי).
+  const label = itemLabel || 'נושא';
   const buildFn = buildMessages || ((topic, i, total) => [
-    { type: 'text', data: `פריט ${i + 1} מתוך ${total}`, removeInvalidChars: true },
+    { type: 'text', data: `${label} ${i + 1} מתוך ${total}`, removeInvalidChars: true },
     ...buildTopicHeaderMessages(topic)
   ]);
 
@@ -1487,7 +1495,8 @@ async function categoryFlow(call, cid, slugParam, page, catName) {
     onOpen: (t) => topicFlow(call, t.tid, t.slug || '', 1, 0),
     onNextPage: () => categoryFlow(call, cid, slugParam, page + 1, name),
     onPrevPage: page > 1 ? () => categoryFlow(call, cid, slugParam, page - 1, name) : null,
-    context: `category:${cid}:${page}`
+    context: `category:${cid}:${page}`,
+    itemLabel: 'נושא'
   });
 }
 

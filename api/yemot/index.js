@@ -1567,10 +1567,20 @@ async function aiSummaryFlow(call, tid, slugParam, firstPageData) {
   }
 
   // 2. איסוף כל הודעות הנושא מכל עמודיו (עד MAX_SUMMARY_PAGES).
-  await call.id_list_message([
-    { type: 'text', data: 'מכינים עבורכם סיכום של הנושא, אנא המתינו', removeInvalidChars: true }
-  ]);
-
+  // הערה קריטית (תוקן): בעבר נשלחה כאן הודעת "מכינים עבורכם סיכום, אנא
+  // המתינו" באמצעות id_list_message *ללא* prependToNextAction. מכיוון
+  // ש-id_list_message הוא directive סופי שמסיים את תור ה-HTTP הנוכחי לגמרי
+  // (זורק ExitError), הקריאה הזו החזירה מיד תשובה לימות ו*סיימה את הפנייה
+  // הנוכחית לגמרי* - כל מה שאחריה (שליפת שאר עמודי הנושא, הקריאה בפועל
+  // ל-Gemini, והקראת הסיכום עצמו) פשוט לא הרוויח אף תור HTTP להתרחש בו,
+  // ולכן מעולם לא נשמע בפועל. בשיחה הבאה של ימות (הבקשה הבאה) היה מתחיל
+  // תהליך חדש לגמרי מהתפריט הראשי - מה שנשמע כאילו המערכת "אומרת שהיא
+  // מכינה סיכום ואז זורקת בחזרה לתפריט הראשי". התיקון: איסוף הנתונים
+  // והקריאה ל-Gemini קורים כאן *בלי* לשלוח הודעת ביניים חוצצת - כל התהליך
+  // (כולל ה-HTTP request ל-Gemini) מתרחש בתוך אותו תור HTTP יחיד מול ימות,
+  // וההודעה היחידה שנשלחת בפועל היא תוצאת הסיכום עצמו בסוף הפונקציה.
+  // הזמן שלוקח לטעון את העמודים ולקרוא ל-Gemini עלול ליצור שקט קצר בקו
+  // עד לתשובה - זה צפוי ותקין (maxDuration=25 שניות מוגדר בvercel.json).
   const topicTitle = firstPageData?.title || '';
   const pageCount = Math.min(firstPageData?.pagination?.pageCount || 1, MAX_SUMMARY_PAGES);
   const allPosts = [];

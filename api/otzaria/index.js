@@ -61,6 +61,7 @@ const {
 // סיכום קולי של הנושא באמצעות Gemini API.
 const { getAiKeys, saveAiKeys } = require('../../lib/aiKeyStore');
 const { summarizeTopic } = require('../../lib/geminiSummarizer');
+const { createChatFlow } = require('../../lib/chatFlow');
 
 /* ============================================================
  * 1. תשתית כללית
@@ -1108,6 +1109,69 @@ async function ensureRecordingFolder() {
   recordingFolderEnsured = true;
 }
 
+/* ---------- שלוחה 6 (צ'אטים אישיים): תשתית הקלטה/תמלול נפרדת ---------- */
+
+const CHAT_RECORD_EXTENSION_NUMBER = '10';
+const CHAT_RECORD_EXTENSION_TITLE = 'ChatReplyRecordings';
+const CHAT_RECORD_MGMT_PATH = `ivr2:/${CHAT_RECORD_EXTENSION_NUMBER}`;
+let chatRecordingFolderEnsured = false;
+
+async function ensureChatRecordingFolder() {
+  if (chatRecordingFolderEnsured) return;
+  const token = process.env.YEMOT_MANAGEMENT_TOKEN;
+  if (!token) {
+    throw new Error('YEMOT_MANAGEMENT_TOKEN לא מוגדר בסביבה - לא ניתן לוודא תיקיית הקלטות תגובה');
+  }
+  const { data: checkData } = await axios.get(`${YEMOT_MANAGEMENT_BASE}/CheckIfFolderExists`, {
+    params: { token, path: CHAT_RECORD_MGMT_PATH },
+    timeout: 10000
+  });
+  if (checkData?.folderExists) {
+    chatRecordingFolderEnsured = true;
+    return;
+  }
+  console.log(`[chatFlow] תת-שלוחת הקלטות התגובה ${CHAT_RECORD_MGMT_PATH} אינה קיימת, יוצר אוטומטית`);
+  const { data: updateData } = await axios.get(`${YEMOT_MANAGEMENT_BASE}/UpdateExtension`, {
+    params: { token, path: CHAT_RECORD_MGMT_PATH, type: 'playfile', title: CHAT_RECORD_EXTENSION_TITLE },
+    timeout: 10000
+  });
+  if (updateData?.responseStatus && updateData.responseStatus !== 'OK') {
+    throw new Error(`יצירת תת-שלוחת ${CHAT_RECORD_MGMT_PATH} נכשלה: ${updateData.message || JSON.stringify(updateData)}`);
+  }
+  const { data: verifyData } = await axios.get(`${YEMOT_MANAGEMENT_BASE}/CheckIfFolderExists`, {
+    params: { token, path: CHAT_RECORD_MGMT_PATH },
+    timeout: 10000
+  });
+  if (!verifyData?.folderExists) {
+    throw new Error(`תת-שלוחת ${CHAT_RECORD_MGMT_PATH} עדיין לא קיימת לאחר ניסיון היצירה`);
+  }
+  chatRecordingFolderEnsured = true;
+}
+
+async function transcribeViaRecording(recordResult) {
+  if (!recordResult || typeof recordResult !== 'string') {
+    throw new Error(`call.read('record') לא החזיר נתיב קובץ תקין (קיבלנו: ${JSON.stringify(recordResult)})`);
+  }
+  const normalizedRelativePath = recordResult.replace(/\/{2,}/g, '/').replace(/^\/+/, '');
+  const recordingPath = `ivr2:/${normalizedRelativePath}`;
+  const wavBuffer = await downloadRecording(recordingPath);
+  return transcribeRecording(wavBuffer);
+}
+
+const { chatsFlow } = createChatFlow({
+  http,
+  FORUM_SYSTEM_ID,
+  loginAsUser,
+  sanitizeForSpeech,
+  getUserCredentials,
+  GoToMainMenu,
+  MENU_READ_OPTS,
+  navHintMessage,
+  transcribeViaRecording,
+  chatRecordSubExtNumber: CHAT_RECORD_EXTENSION_NUMBER,
+  ensureChatRecordingFolder
+});
+
 async function voiceSearchFlow(call) {
   // שלב 0: לוודא שתת-שלוחת ההקלטות קיימת (יוצרת אוטומטית אם לא, ר' תיעוד
   // ensureRecordingFolder). אם זה נכשל (למשל טוקן שגוי), עדיף להיכשל כאן
@@ -1585,7 +1649,8 @@ async function helpFlow(call) {
     { type: 'text', data: 'הקישו 0 לחזרה לתפריט הקטגוריות', removeInvalidChars: true },
     { type: 'text', data: 'הקישו כוכבית בכל עת לחזרה לתפריט הראשי', removeInvalidChars: true },
     { type: 'text', data: 'בתוך אשכול, ניתן להקיש את מספר ההודעה כדי לדלג ישירות אליה', removeInvalidChars: true },
-    { type: 'text', data: 'בתוך אשכול, הקישו 8 לקבלת סיכום הנושא בבינה מלאכותית', removeInvalidChars: true }
+    { type: 'text', data: 'בתוך אשכול, הקישו 8 לקבלת סיכום הנושא בבינה מלאכותית', removeInvalidChars: true },
+    { type: 'text', data: 'לצ\'אטים אישיים בתפריט הראשי הקישו 6 - עיון ומענה בהקלטה מתומללת או בהקלדת טקסט', removeInvalidChars: true }
   ], { prependToNextAction: true });
 }
 
@@ -1616,7 +1681,8 @@ router.get('/', async (call) => {
         { type: 'text', data: 'לקטגוריות הקישו 3', removeInvalidChars: true },
         { type: 'text', data: 'לחיפוש קולי בפורום הקישו 4', removeInvalidChars: true },
         { type: 'text', data: 'להתראות אישיות הקישו 5', removeInvalidChars: true },
-        { type: 'text', data: 'לעזרה הקישו 6', removeInvalidChars: true },
+        { type: 'text', data: 'לצ\'אטים אישיים הקישו 6', removeInvalidChars: true },
+        { type: 'text', data: 'לעזרה הקישו 7', removeInvalidChars: true },
         { type: 'text', data: 'להגדרות אישיות הקישו 9', removeInvalidChars: true }
       ], 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
 
@@ -1628,7 +1694,8 @@ router.get('/', async (call) => {
         case '3': await categoriesFlow(call); break;
         case '4': await voiceSearchFlow(call); break;
         case '5': await notificationsFlow(call); break;
-        case '6': await helpFlow(call); break;
+        case '6': await chatsFlow(call); break;
+        case '7': await helpFlow(call); break;
         case '9': await settingsFlow(call); break;
         // תיקון: הקשה 0 בתפריט הראשי חוזרת (מפורשות) לתפריט הראשי עצמו -
         // עקבי עם המשמעות של מקש 0 בכל תת-תפריט אחר במערכת (ר' GoToMainMenu

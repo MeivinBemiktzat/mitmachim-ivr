@@ -1337,7 +1337,12 @@ async function browseTopicList(call, topics, { onOpen, onNextPage, onPrevPage, c
       navHintMessage()
     ];
 
-    const key = await call.read(messages, 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
+    // תיקון: allow_empty היה false (ברירת המחדל של MENU_READ_OPTS), כך
+    // ש-sec_wait (7 שניות) ללא הקשה כלל נחשב לקריאה לא תקינה וקפץ ישירות
+    // לתפריט הראשי - במקום פשוט לחזור על אותו נושא. בנוסף, כל הקשה לא
+    // מזוהה (וגם שתיקה/timeout) קפצה בטעות לנושא הבא (i++) במקום לחזור
+    // ולהשמיע את אותו נושא - עכשיו שתיהן מטופלות כ-re-prompt.
+    const key = await call.read(messages, 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '' });
 
     if (key === '1') {
       return onOpen(topic);
@@ -1345,7 +1350,7 @@ async function browseTopicList(call, topics, { onOpen, onNextPage, onPrevPage, c
     if (key === '9') { i++; continue; }
     if (key === '7') { i = Math.max(0, i - 1); continue; }
     if (key === '0' || key === '*') throw new GoToMainMenu();
-    i++;
+    continue;
   }
 
   const nextKey = await call.read([

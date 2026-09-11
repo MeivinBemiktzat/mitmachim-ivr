@@ -264,6 +264,36 @@ async function fetchUserNotifications(userCookie) {
   }, 1);
 }
 
+/** סופר את מספר ההתראות ש*עדיין לא נקראו* (read שאינו true) - המונה ה"אמיתי"
+ *  שהמשתמש ביקש: התראות שלא נראו בשום מקום, לא בטלפון ולא במחשב/בפעמון באתר.
+ *  NodeBB מסמן כל התראה בשדה read בוליאני; התראה שנקראה מגיעה עם read=true
+ *  ולכן לא נספרת כאן. עד לתיקון נספרו כל ההתראות מאז ההרשמה (לפי timestamp),
+ *  כולל כאלה שכבר נקראו - ומכאן התלונה "אומר כל הזמן שיש הרבה התראות". */
+function countUnread(notifications) {
+  return (notifications || []).filter((n) => n && !n.read).length;
+}
+
+/** מסמן רשימת התראות (לפי nid) כ"נקראו" בפורום - best-effort. כך שהתראה
+ *  שהמשתמש *שמע בטלפון* נחשבת נקראה בדיוק כמו התראה שנקראה בפעמון באתר,
+ *  ולא תיספר עוד. משתמש ב-Write API של NodeBB (PUT /api/v3/notifications/read)
+ *  עם עוגיית המשתמש + csrf token מ-/api/config. כל שגיאה נלכדת ומתועדת בלבד. */
+async function markNotificationsRead(userCookie, nids) {
+  const list = (nids || []).filter((n) => n != null);
+  if (list.length === 0) return;
+  try {
+    const configRes = await http.get('/api/config', { headers: { Cookie: userCookie } });
+    const csrfToken = configRes.data?.csrf_token;
+    if (!csrfToken) return;
+    await http.put('/api/v3/notifications/read', { nids: list }, {
+      headers: { Cookie: userCookie, 'x-csrf-token': csrfToken, 'Content-Type': 'application/json' },
+      timeout: 8000,
+      validateStatus: (s) => s < 500
+    });
+  } catch (err) {
+    console.error('[markNotificationsRead] סימון התראות כנקראו נכשל (best-effort)', err.message);
+  }
+}
+
 /* ============================================================
  * 2. שכבת נתונים - NodeBB REST API (f2.freeivr.co.il)
  * NodeBB חושף כל דף כ-JSON על ידי הוספת api/ בתחילת הנתיב.
@@ -990,11 +1020,9 @@ async function announceNewNotifications(call) {
     const data = await fetchUserNotifications(userCookie);
     const notifications = data?.notifications || [];
 
-    const sinceTime = new Date(sub.since).getTime();
-    const newCount = notifications.filter((n) => {
-      const t = new Date(n.datetimeISO || n.datetime || 0).getTime();
-      return !isNaN(t) && t > sinceTime;
-    }).length;
+    // תיקון מהותי: סופרים רק התראות ש*לא נקראו בפועל* (read !== true), ולא
+    // כל התראה שנוצרה מאז ההרשמה לפי timestamp (ר' countUnread ובקשת המשתמש).
+    const newCount = countUnread(notifications);
 
     if (newCount > 0) {
       // prependToNextAction: true - ההודעה תושמע לפני ה-read של תפריט
@@ -1003,7 +1031,7 @@ async function announceNewNotifications(call) {
       await call.id_list_message([
         { type: 'text', data: 'יש לך', removeInvalidChars: true },
         { type: 'number', data: String(newCount) },
-        { type: 'text', data: 'התראות חדשות, לשמיעה הקישו 5', removeInvalidChars: true }
+        { type: 'text', data: newCount === 1 ? 'התראה שלא נקראה, לשמיעה הקישו 5' : 'התראות שלא נקראו, לשמיעה הקישו 5', removeInvalidChars: true }
       ], { prependToNextAction: true });
     }
   } catch (err) {
@@ -1053,13 +1081,30 @@ async function notificationsFlow(call) {
 
   if (notifications.length === 0) {
     return call.id_list_message([
-      { type: 'text', data: 'אין לכם כרגע התראות חדשות בפורום', removeInvalidChars: true }
+      { type: 'text', data: 'אין לכם כרגע התראות בפורום', removeInvalidChars: true }
     ], { prependToNextAction: true });
   }
+
+  // הכרזת מספר ההתראות שלא נקראו (המונה האמיתי) לפני שמתחילים.
+  const unreadCount = countUnread(notifications);
+  await call.id_list_message([
+    { type: 'text', data: unreadCount > 0
+        ? `יש לכם ${unreadCount} התראות שלא נקראו, מתוך ${notifications.length} התראות אחרונות`
+        : `אין התראות שלא נקראו, נשמיע את ${notifications.length} ההתראות האחרונות`,
+      removeInvalidChars: true }
+  ], { prependToNextAction: true });
+
+  // סימון "נקרא בטלפון": כל התראה שנשמעת מסומנת כנקראה בפורום (best-effort,
+  // פעם אחת), כדי שהמונה יירד בהתאם למה שכבר שמע (ר' בקשת המשתמש).
+  const markedRead = new Set();
 
   let i = 0;
   while (i < notifications.length) {
     const notif = notifications[i];
+    if (notif?.nid != null && !markedRead.has(notif.nid)) {
+      markedRead.add(notif.nid);
+      markNotificationsRead(userCookie, [notif.nid]).catch(() => {});
+    }
     const messages = [
       ...buildNotificationMessages(notif, i, notifications.length),
       navHintMessage()

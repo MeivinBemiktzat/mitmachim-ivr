@@ -297,6 +297,20 @@ async function markNotificationsRead(userCookie, nids) {
   }
 }
 
+function parseNotificationTarget(notif) {
+  if (!notif) return null;
+  const path = String(notif.path || notif.bodyLong || '');
+  const m = path.match(/\/topic\/(\d+)(?:\/([^/?#]+))?(?:\/(\d+))?/);
+  if (m) {
+    const tid = m[1];
+    const slug = m[2] ? `${tid}/${m[2]}` : '';
+    const postIndex = m[3] ? parseInt(m[3], 10) : null;
+    return { tid, slug, postIndex };
+  }
+  if (notif.tid) return { tid: String(notif.tid), slug: '', postIndex: null };
+  return null;
+}
+
 /* ============================================================
  * 2. שכבת נתונים - NodeBB REST API (bina.top)
  * NodeBB חושף כל דף כ-JSON על ידי הוספת api/ בתחילת הנתיב.
@@ -622,6 +636,26 @@ const MENU_READ_OPTS = {
 /** נזרק ע"י מסך פנימי כדי לאותת "חזור לתפריט הראשי" למרכז השיחה (main loop). */
 class GoToMainMenu extends Error {}
 
+/** נזרק כדי לאותת "חזור מסך אחד אחורה" (לרמה שקראה למסך הנוכחי), בשונה
+ *  מ-GoToMainMenu שתמיד קופץ עד לתפריט הראשי. כך מקש 0 מתפקד כ"חזרה"
+ *  אמיתית רמה אחת (בדיוק כפי שמבטיח רמז הניווט "0 לחזרה"), ולא כקפיצה
+ *  מפתיעה לתפריט הראשי - שהייתה הסיבה המרכזית לתחושה ש"הכל קופץ לתפריט
+ *  הראשי". כל מסך שפותח מסך-בן עוטף אותו ב-try/catch ל-GoBack וחוזר
+ *  להציג את עצמו. */
+class GoBack extends Error {}
+
+/** נזרקים מתוך אשכול (topicFlow) כדי לעבור לנושא הבא/הקודם *באותה רשימה*
+ *  שממנה נפתח הנושא - נלכדים ע"י מנהל הרשימה (browseTopicList או
+ *  notificationsFlow), כדי לאפשר מעבר רציף מנושא לנושא בלי לחזור ידנית
+ *  לרשימה ולבחור מחדש (ר' בקשת המשתמש למעבר נוח בין נושאים). */
+class NextTopic extends Error {}
+class PrevTopic extends Error {}
+
+/** מספר ההודעות בעמוד אשכול ב-NodeBB (ברירת המחדל, postsPerPage). משמש
+ *  לחישוב עמוד+אינדקס התחלה כשנכנסים ישירות לפוסט מסוים שעליו התראה
+ *  (ר' parseNotificationTarget/notificationsFlow). */
+const POSTS_PER_PAGE = 20;
+
 /* ============================================================
  * 5. הראוטר הראשי - שלוחת API יחידה, כל הניווט קורה בתוך הקוד
  * ============================================================ */
@@ -940,7 +974,7 @@ async function notificationsFlow(call) {
   if (!creds) {
     return call.id_list_message([
       { type: 'text', data: 'מספר הטלפון שלכם אינו רשום לשירות ההתראות', removeInvalidChars: true },
-      { type: 'text', data: 'כדי להירשם, אנא היכנסו לאתר ההרשמה ומלאו את הפרטים שלכם בפורום', removeInvalidChars: true }
+      { type: 'text', data: 'כדי להירשם, אנא היכנסו ��א��ר ההרשמה ומלאו את הפרטים שלכם בפורום', removeInvalidChars: true }
     ], { prependToNextAction: true });
   }
 
@@ -972,7 +1006,8 @@ async function notificationsFlow(call) {
     ], { prependToNextAction: true });
   }
 
-  // הכרזת מספר ההתראות שלא נקראו (המונה האמיתי) לפני שמתחילים.
+  // הכרזת מספר ההתראות שלא נקראו (המונה האמיתי) לפני שמתחילים - כך המשתמש
+  // יודע כמה באמת ממתינות לו, בנפרד מסך כל ההתראות ההיסטוריות שנשמרות.
   const unreadCount = countUnread(notifications);
   await call.id_list_message([
     { type: 'text', data: unreadCount > 0
@@ -981,8 +1016,9 @@ async function notificationsFlow(call) {
       removeInvalidChars: true }
   ], { prependToNextAction: true });
 
-  // סימון "נקרא בטלפון": כל התראה שנשמעת מסומנת כנקראה בפורום (best-effort,
-  // פעם אחת), כדי שהמונה יירד בהתאם למה שכבר שמע (ר' בקשת המשתמש).
+  // סימון "נקרא בטלפון": כל התראה שהמשתמש שומע מסומנת כנקראה בפורום (best-
+  // effort), פעם אחת בלבד, כדי שהמונה יירד בהתאם למה שכבר שמע (ר' בקשת
+  // המשתמש: "את חלקם שמעתי דרך הפלאפון").
   const markedRead = new Set();
 
   let i = 0;
@@ -992,30 +1028,46 @@ async function notificationsFlow(call) {
       markedRead.add(notif.nid);
       markNotificationsRead(userCookie, [notif.nid]).catch(() => {});
     }
-    const messages = [
-      ...buildNotificationMessages(notif, i, notifications.length),
-      navHintMessage()
-    ];
 
-    const key = await call.read(messages, 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '9' });
+    const target = parseNotificationTarget(notif);
+    const messages = [...buildNotificationMessages(notif, i, notifications.length)];
+    if (target) {
+      messages.push({ type: 'text', data: 'להיכנס לנושא שעליו ההתראה הקישו 1', removeInvalidChars: true });
+    }
+    messages.push({ type: 'text', data: 'הקישו 9 להתראה הבאה, 7 לקודמת, 0 לתפריט הראשי', removeInvalidChars: true });
 
-    if (key === '9' || key === '1' || key === '') { i++; continue; }
+    const key = await call.read(messages, 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '' });
+
+    if (key === '1' && target) {
+      // כניסה לנושא שעליו ההתראה, ישירות לעמוד/הודעה הרלוונטיים אם ידועים.
+      const startPage = target.postIndex ? Math.max(1, Math.ceil(target.postIndex / POSTS_PER_PAGE)) : 1;
+      const startIdx = target.postIndex ? (target.postIndex - 1) % POSTS_PER_PAGE : 0;
+      try {
+        await topicFlow(call, target.tid, target.slug, startPage, startIdx);
+      } catch (err) {
+        if (err instanceof GoToMainMenu) throw err;
+        // GoBack/NextTopic/PrevTopic מתוך הנושא - חוזרים לרשימת ההתראות
+        // באותו מקום, במקום לקפוץ לתפריט הראשי.
+        if (!(err instanceof GoBack || err instanceof NextTopic || err instanceof PrevTopic)) throw err;
+      }
+      continue;
+    }
+    if (key === '9') { i++; continue; }
     if (key === '7') { i = Math.max(0, i - 1); continue; }
-    if (key === '0' || key === '*') throw new GoToMainMenu();
-    // תיקון ניווט (5ה): הקשה לא מזוהה חוזרת על הפריט הנוכחי (re-prompt).
+    if (key === '0') throw new GoBack();
+    if (key === '*') throw new GoToMainMenu();
+    // הקשה לא מזוהה / שתיקה - חוזר על אותה התראה (re-prompt), בלי דילוג לא צפוי.
     continue;
   }
 
-  // תיקון ניווט (5ה): רק '*' (במפורש) גורם למעבר לתפריט הראשי במסך סוף-רשימה;
-  // כל הקשה אחרת חוזרת על אותה הודעת סיום, ולא "בורחת" לתפריט הראשי.
   for (;;) {
     const endKey = await call.read([
       { type: 'text', data: 'הגעתם לסוף רשימת ההתראות', removeInvalidChars: true },
-      { type: 'text', data: 'לחזרה להתחלת הרשימה הקישו 7, לתפריט הראשי הקישו כוכבית', removeInvalidChars: true }
-    ], 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '*' });
+      { type: 'text', data: 'לחזרה להתחלת הרשימה הקישו 7, לתפריט הראשי הקישו 0 או כוכבית', removeInvalidChars: true }
+    ], 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '' });
 
     if (endKey === '7') return notificationsFlow(call);
-    if (endKey === '*') throw new GoToMainMenu();
+    if (endKey === '0' || endKey === '*') throw new GoToMainMenu();
     // הקשה אחרת - חוזר על אותה הודעת סיום (re-prompt).
   }
 }
@@ -1241,7 +1293,7 @@ async function browseTopicList(call, topics, { onOpen, onNextPage, onPrevPage, c
   // תיקון: "פריט X מתוך X" היה גנרי מדי ולא הבהיר למשתמש האם הוא מאזין
   // לרשימת פוסטים אחרונים, נושאים אחרונים או תוצאות חיפוש. עכשיו כל קורא
   // ל-browseTopicList מעביר itemLabel מתאים ("פוסט"/"נושא"), עם "נושא"
-  // כברירת מחדל.
+  // כברירת מחדל (משמש גם את recentTopicsFlow וגם את תוצאות החיפוש הקולי).
   const label = itemLabel || 'נושא';
   const buildFn = buildMessages || ((topic, i, total) => [
     { type: 'text', data: `${label} ${i + 1} מתוך ${total}`, removeInvalidChars: true },
@@ -1265,12 +1317,38 @@ async function browseTopicList(call, topics, { onOpen, onNextPage, onPrevPage, c
     const key = await call.read(messages, 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '' });
 
     if (key === '1') {
-      return onOpen(topic);
+      // פתיחת הנושא, עם תמיכה במעבר רציף מנושא לנושא: אם המשתמש הגיע לסוף
+      // הנושא והקיש "לנושא הבא" (NextTopic) - פותחים כאן את הנושא הבא ברשימה
+      // בלי לחזור ולבחור ידנית. GoBack מהנושא מחזיר לרשימה באותו מקום.
+      let openIdx = i;
+      for (;;) {
+        try {
+          await onOpen(topics[openIdx]);
+          i = openIdx;
+          break;
+        } catch (err) {
+          if (err instanceof GoBack) { i = openIdx; break; }
+          if (err instanceof NextTopic) {
+            if (openIdx + 1 < topics.length) { openIdx++; continue; }
+            if (onNextPage) return onNextPage();
+            i = openIdx; break; // אין נושא הבא ואין עמוד הבא - נשארים ברשימה
+          }
+          if (err instanceof PrevTopic) {
+            if (openIdx > 0) { openIdx--; continue; }
+            i = openIdx; break;
+          }
+          throw err; // GoToMainMenu או שגיאה אמיתית - עולה למעלה
+        }
+      }
+      continue;
     }
     if (key === '9') { i++; continue; }
     if (key === '7') { i = Math.max(0, i - 1); continue; }
-    if (key === '0' || key === '*') throw new GoToMainMenu();
-    // תיקון ניווט (5ה): הקשה לא מזוהה (או שתיקה/timeout) חוזרת על הפריט הנוכחי (re-prompt).
+    // מקש 0 = חזרה רמה אחת אחורה (GoBack) ולא קפיצה ישירה לתפריט הראשי -
+    // הרמה שקראה לרשימה הזו (קטגוריה / התפריט הראשי) תלכוד ותציג את עצמה.
+    if (key === '0') throw new GoBack();
+    if (key === '*') throw new GoToMainMenu();
+    // הקשה לא מזוהה (או שתיקה/timeout) חוזרת על הפריט הנוכחי (re-prompt).
     continue;
   }
 
@@ -1282,12 +1360,13 @@ async function browseTopicList(call, topics, { onOpen, onNextPage, onPrevPage, c
       { type: 'text', data: 'הגעתם לסוף הרשימה בעמוד הנוכחי', removeInvalidChars: true },
       { type: 'text', data: onNextPage ? 'לעמוד הבא הקישו 9' : '', removeInvalidChars: true },
       { type: 'text', data: onPrevPage ? 'לעמוד הקודם הקישו 7' : '', removeInvalidChars: true },
-      { type: 'text', data: 'לתפריט הראשי הקישו 0', removeInvalidChars: true }
+      { type: 'text', data: 'לחזרה הקישו 0, לתפריט הראשי הקישו כוכבית', removeInvalidChars: true }
     ], 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '0' });
 
     if (nextKey === '9' && onNextPage) return onNextPage();
     if (nextKey === '7' && onPrevPage) return onPrevPage();
-    if (nextKey === '0' || nextKey === '*') throw new GoToMainMenu();
+    if (nextKey === '0') throw new GoBack();
+    if (nextKey === '*') throw new GoToMainMenu();
     // הקשה אחרת (כולל 9/7 לא רלוונטיים כרגע) - חוזר על אותה הודעת סיום.
   }
 }
@@ -1313,7 +1392,19 @@ async function categoriesFlow(call) {
   }
 
   let i = 0;
-  while (i < categories.length) {
+  for (;;) {
+    // הגענו לסוף הרשימה: לא קופצים לתפריט הראשי מעצמנו (זו הייתה סיבה נוספת
+    // ל"קפיצות" לא צפויות) - מציעים לחזור להתחלה או לצאת במפורש.
+    if (i >= categories.length) {
+      const endKey = await call.read([
+        { type: 'text', data: 'הגעתם לסוף רשימת הקטגוריות', removeInvalidChars: true },
+        { type: 'text', data: 'לחזרה להתחלת הרשימה הקישו 7, לתפריט הראשי הקישו 0 או כוכבית', removeInvalidChars: true }
+      ], 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '' });
+      if (endKey === '7') { i = 0; continue; }
+      if (endKey === '0' || endKey === '*') throw new GoToMainMenu();
+      continue;
+    }
+
     const cat = categories[i];
     const depthLabel = cat._depth > 0 ? `תת-קטגוריה ברמה ${cat._depth}: ` : '';
     const key = await call.read([
@@ -1321,19 +1412,24 @@ async function categoriesFlow(call) {
       { type: 'text', data: `${depthLabel}${sanitizeForSpeech(cat.name)}`, removeInvalidChars: true },
       { type: 'text', data: 'לכניסה הקישו 1', removeInvalidChars: true },
       navHintMessage()
-    ], 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
+    ], 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '' });
 
     if (key === '1') {
-      return categoryFlow(call, cat.cid, cat.slug || '', 1, cat.name);
+      try {
+        await categoryFlow(call, cat.cid, cat.slug || '', 1, cat.name);
+      } catch (err) {
+        // GoBack מתוך הקטגוריה - נשארים ברשימת הקטגוריות באותו מקום.
+        if (!(err instanceof GoBack)) throw err;
+      }
+      continue;
     }
     if (key === '9') { i++; continue; }
     if (key === '7') { i = Math.max(0, i - 1); continue; }
+    // הרשימה הזו נמצאת רמה אחת מתחת לתפריט הראשי, ולכן 0 = תפריט ראשי.
     if (key === '0' || key === '*') throw new GoToMainMenu();
-    // תיקון ניווט (5ה): הקשה לא מזוהה חוזרת על הפריט הנוכחי (re-prompt).
+    // הקשה לא מזוהה חוזרת על הפריט הנוכחי (re-prompt).
     continue;
   }
-
-  throw new GoToMainMenu();
 }
 
 async function categoryFlow(call, cid, slugParam, page, catName) {
@@ -1360,10 +1456,12 @@ async function categoryFlow(call, cid, slugParam, page, catName) {
     ], { prependToNextAction: true });
   }
 
+  // מצב 2: רק תתי-קטגוריות, אין אשכולות ישירים - נכנסים ישר לרשימת תתי-הקטגוריות.
   if (!hasTopics && hasChildren) {
     return subcategoriesFlow(call, children, name);
   }
 
+  // מצב 3: גם וגם - תפריט בחירה בין אשכולות בקטגוריה לתתי-קטגוריות.
   if (hasTopics && hasChildren && page === 1) {
     const key = await call.read([
       { type: 'text', data: `בקטגוריה ${sanitizeForSpeech(name)} יש גם אשכולות וגם תתי-קטגוריות`, removeInvalidChars: true },
@@ -1373,9 +1471,12 @@ async function categoryFlow(call, cid, slugParam, page, catName) {
     ], 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
 
     if (key === '2') return subcategoriesFlow(call, children, name);
-    if (key === '0' || key === '*') throw new GoToMainMenu();
+    if (key === '0') throw new GoBack();
+    if (key === '*') throw new GoToMainMenu();
+    // כל הקשה אחרת (כולל 1) ממשיכה להצגת האשכולות הישירים למטה
   }
 
+  // מצב 1 (או המשך מצב 3 אחרי בחירת "אשכולות"): הצגת האשכולות הישירים בקטגוריה.
   await browseTopicList(call, topics, {
     onOpen: (t) => topicFlow(call, t.tid, t.slug || '', 1, 0),
     onNextPage: () => categoryFlow(call, cid, slugParam, page + 1, name),
@@ -1387,26 +1488,42 @@ async function categoryFlow(call, cid, slugParam, page, catName) {
 
 async function subcategoriesFlow(call, children, parentName) {
   let i = 0;
-  while (i < children.length) {
+  for (;;) {
+    if (i >= children.length) {
+      const endKey = await call.read([
+        { type: 'text', data: 'הגעתם לסוף רשימת תתי-הקטגוריות', removeInvalidChars: true },
+        { type: 'text', data: 'לחזרה להתחלת הרשימה הקישו 7, לחזרה הקישו 0, לתפריט הראשי הקישו כוכבית', removeInvalidChars: true }
+      ], 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '' });
+      if (endKey === '7') { i = 0; continue; }
+      if (endKey === '0') throw new GoBack();
+      if (endKey === '*') throw new GoToMainMenu();
+      continue;
+    }
+
     const sub = children[i];
     const key = await call.read([
       { type: 'text', data: `תת-קטגוריה ${i + 1} מתוך ${children.length} ב${sanitizeForSpeech(parentName)}`, removeInvalidChars: true },
       { type: 'text', data: sanitizeForSpeech(sub.name), removeInvalidChars: true },
       { type: 'text', data: 'לכניסה הקישו 1', removeInvalidChars: true },
       navHintMessage()
-    ], 'tap', { ...MENU_READ_OPTS, max_digits: 1 });
+    ], 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '' });
 
     if (key === '1') {
-      return categoryFlow(call, sub.cid, sub.slug || '', 1, sub.name);
+      try {
+        await categoryFlow(call, sub.cid, sub.slug || '', 1, sub.name);
+      } catch (err) {
+        // GoBack מתוך תת-הקטגוריה - נשארים ברשימת תתי-הקטגוריות באותו מקום.
+        if (!(err instanceof GoBack)) throw err;
+      }
+      continue;
     }
     if (key === '9') { i++; continue; }
     if (key === '7') { i = Math.max(0, i - 1); continue; }
-    if (key === '0' || key === '*') throw new GoToMainMenu();
-    // תיקון ניווט (5ה): הקשה לא מזוהה חוזרת על הפריט הנוכחי (re-prompt).
+    if (key === '0') throw new GoBack();
+    if (key === '*') throw new GoToMainMenu();
+    // הקשה לא מזוהה חוזרת על הפריט הנוכחי (re-prompt).
     continue;
   }
-
-  throw new GoToMainMenu();
 }
 
 /**
@@ -1518,31 +1635,47 @@ async function topicFlow(call, tid, slugParam, page, startIdx) {
       topicNavHintMessage()
     ];
 
-    const key = await call.read(messages, 'tap', { ...MENU_READ_OPTS, max_digits: 2, allow_empty: true, empty_val: '9' });
+    // empty_val='' (ולא '9'): שתיקה חוזרת על ההודעה הנוכחית ולא מקדמת
+    // אוטומטית להודעה הבאה - כדי שדבר לא "יזוז מעצמו" בלי הקשה (ר' תלונת
+    // המשתמש "עובר בלי קשר למה שלחצתי או לא לחצתי").
+    const key = await call.read(messages, 'tap', { ...MENU_READ_OPTS, max_digits: 2, allow_empty: true, empty_val: '' });
 
-    if (key === '9' || key === '') {
+    if (key === '') { continue; } // שתיקה - חוזר על ההודעה הנוכחית
+
+    if (key === '9') {
       if (idx + 1 < posts.length) { idx++; continue; }
       if (page < pageCount) return topicFlow(call, tid, slugParam, page + 1, 0);
-      const endKey = await call.read([
-        { type: 'text', data: 'הגעתם לסוף האשכול', removeInvalidChars: true },
-        { type: 'text', data: 'לחזרה לקטגוריות הקישו 0, לתפריט הראשי הקישו כוכבית', removeInvalidChars: true }
-      ], 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '0' });
-      if (endKey === '0') return categoriesFlow(call);
-      throw new GoToMainMenu();
+      // סוף האשכול - מסך ניווט ייעודי עם מעבר נוח לנושא הבא/הקודם ברשימה.
+      for (;;) {
+        const endKey = await call.read([
+          { type: 'text', data: 'הגעתם לסוף האשכול', removeInvalidChars: true },
+          { type: 'text', data: 'לנושא הבא הקישו 9, לנושא הקודם הקישו 7, לחזרה לרשימה הקישו 0, לתפריט הראשי הקישו כוכבית', removeInvalidChars: true }
+        ], 'tap', { ...MENU_READ_OPTS, max_digits: 1, allow_empty: true, empty_val: '' });
+        if (endKey === '9') throw new NextTopic();
+        if (endKey === '7') throw new PrevTopic();
+        if (endKey === '0') throw new GoBack();
+        if (endKey === '*') throw new GoToMainMenu();
+        // הקשה אחרת - חוזר על מסך הסיום.
+      }
     }
     if (key === '7') {
       if (idx > 0) { idx--; continue; }
       if (page > 1) return topicFlow(call, tid, slugParam, page - 1, 0);
-      continue;
+      continue; // כבר בהודעה הראשונה בעמוד הראשון
     }
-    // מקש 8: סיכום הנושא כולו בבינה מלאכותית - נבדק לפני דילוג הספרות למטה.
+    // מקש 8: סיכום הנושא כולו בבינה מלאכותית (ר' aiSummaryFlow ותיעוד בחירת
+    // המקש שם). נבדק *לפני* דילוג הספרות למטה, כדי ש-8 תמיד תפעיל סיכום
+    // ולא תדלג להודעה מספר 8. לאחר הסיכום נשארים באותה הודעה נוכחית (continue).
     if (key === '8') {
       await aiSummaryFlow(call, tid, slugParam, data);
       continue;
     }
-    if (key === '0') return categoriesFlow(call);
+    // מקש 0 = חזרה רמה אחת אחורה (לרשימה שממנה נכנסנו לנושא) ולא קפיצה
+    // לקטגוריות/לתפריט הראשי - כך "נושא מעניין" לא זורק אותך החוצה.
+    if (key === '0') throw new GoBack();
     if (key === '*') throw new GoToMainMenu();
 
+    // ניווט לפי ספרות: הקשה של מספר עובר ישירות להודעה המבוקשת באשכול הנוכחי
     const target = parseInt(key, 10);
     if (!isNaN(target) && target >= 1 && target <= posts.length) {
       idx = target - 1;
@@ -1560,10 +1693,12 @@ async function helpFlow(call) {
     { type: 'text', data: 'מדריך ניווט מהיר', removeInvalidChars: true },
     { type: 'text', data: 'בכל שלב, הקישו 9 למעבר להודעה או פריט הבא', removeInvalidChars: true },
     { type: 'text', data: 'הקישו 7 לחזרה להודעה או לפריט הקודם', removeInvalidChars: true },
-    { type: 'text', data: 'הקישו 0 לחזרה לתפריט הקטגוריות', removeInvalidChars: true },
-    { type: 'text', data: 'הקישו כוכבית בכל עת לחזרה לתפריט הראשי', removeInvalidChars: true },
+    { type: 'text', data: 'הקישו 0 לחזרה רמה אחת אחורה - מנושא חזרה לרשימה, ומרשימה חזרה לתפריט', removeInvalidChars: true },
+    { type: 'text', data: 'הקישו כוכבית בכל עת לחזרה ישירה לתפריט הראשי', removeInvalidChars: true },
+    { type: 'text', data: 'בסוף אשכול, הקישו 9 למעבר לנושא הבא ברשימה, או 7 לנושא הקודם', removeInvalidChars: true },
     { type: 'text', data: 'בתוך אשכול, ניתן להקיש את מספר ההודעה כדי לדלג ישירות אליה', removeInvalidChars: true },
     { type: 'text', data: 'בתוך אשכול, הקישו 8 לקבלת סיכום הנושא בבינה מלאכותית', removeInvalidChars: true },
+    { type: 'text', data: 'בשלוחת ההתראות, הקישו 1 על התראה כדי להיכנס לנושא שעליו היא', removeInvalidChars: true },
     { type: 'text', data: 'בתפריט ההגדרות, הקישו 2 להזנת שם משתמש וסיסמא לפורום דרך הטלפון', removeInvalidChars: true },
     { type: 'text', data: 'לצ\'אטים אישיים בתפריט הראשי הקישו 6 - עיון ומענה בהקלטה מתומללת או בהקלדת טקסט', removeInvalidChars: true }
   ], { prependToNextAction: true });
@@ -1617,7 +1752,8 @@ router.get('/', async (call) => {
         default: break; // הקשה לא מוכרת - חוזר לתפריט הראשי
       }
     } catch (err) {
-      if (err instanceof GoToMainMenu) continue;
+      if (err instanceof GoToMainMenu || err instanceof GoBack
+        || err instanceof NextTopic || err instanceof PrevTopic) continue;
       throw err;
     }
   }

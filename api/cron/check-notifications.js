@@ -204,7 +204,13 @@ async function processSubscriber(forum, subscriber, log) {
   let newestNewTime = null;
   let newCount = 0;
   for (const notif of notifications) {
+    // תיקון מהותי (ר' בקשת המשתמש): מצנתקים רק על התראות ש*לא נקראו* בפועל
+    // (read שאינו true) - התראה שהמשתמש כבר ראה בפעמון באתר/במחשב או שמע
+    // בטלפון (ואז סומנה כנקראה) לא מזכה בצינתוק, גם אם היא חדשה יחסית ל-since.
+    if (notif.read) continue;
     const t = new Date(notif.datetimeISO || notif.datetime || 0).getTime();
+    // floorTime מונע צינתוק חוזר על אותה התראה חדשה בהרצות עוקבות (עד
+    // שהמשתמש יקרא אותה) - שולחים רק על התראות שלא נקראו וגם חדשות מ-floor.
     if (isNaN(t) || t <= floorTime) continue;
     newCount++;
     if (newestNewTime === null || t > newestNewTime) newestNewTime = t;

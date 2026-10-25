@@ -16,6 +16,9 @@
     "api/binatop/index.js": {
       "maxDuration": 25
     },
+    "api/eklimos/index.js": {
+      "maxDuration": 25
+    },
     "api/transcribe.py": {
       "maxDuration": 20
     },

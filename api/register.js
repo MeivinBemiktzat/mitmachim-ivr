@@ -7,7 +7,8 @@
  * (api/yemot/index.js עבור מתמחים טופ, api/freeivr/index.js עבור freeivr,
  * api/otzaria/index.js עבור פורום אוצריא, api/goodlink/index.js עבור פורום
  * גוד לינק, api/binatop/index.js עבור פורום בינה טופ, api/eklimos/index.js
- * עבור פורום אקלימוס) תוכל לזהות מתקשר לפי מספר הטלפון
+ * עבור פורום אקלימוס, api/miktzav/index.js עבור פורום מקצב) תוכל לזהות
+ * מתקשר לפי מספר הטלפון
  * שלו (call.phone) ולהתחבר בשמו לפורום הרלוונטי כדי להקריא לו את ההתראות
  * האישיות שלו.
  *
@@ -73,7 +74,8 @@ const SUPPORTED_SYSTEMS = [
   { value: 'otzaria', label: 'פורום אוצריא (otzaria.org/forum)' },
   { value: 'goodlink', label: 'פורום גוד לינק (good-link.org)' },
   { value: 'binatop', label: 'פורום בינה טופ (bina.top)' },
-  { value: 'eklimos', label: 'פורום אקלימוס (weather-forum.co.il)' }
+  { value: 'eklimos', label: 'פורום אקלימוס (weather-forum.co.il)' },
+  { value: 'miktzav', label: 'פורום מקצב (miktzav.com)' }
 ];
 
 function isValidSystem(system) {
@@ -213,7 +215,7 @@ function renderPage({ view, status, message, selectedSystem, phoneValue, usernam
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>הרשמה להתראות קוליות - מתמחים טופ / freeivr / אוצריא / גוד לינק / בינה טופ / אקלימוס</title>
+<title>הרשמה להתראות קוליות - מתמחים טופ / freeivr / אוצריא / גוד לינק / בינה טופ / אקלימוס / מקצב</title>
 <style>
   :root {
     --bg: #f4f6f8;

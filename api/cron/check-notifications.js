@@ -4,7 +4,8 @@
  * ==========================================================================
  * מוגדר ב-Upstash QStash כ-Schedule שרץ כל 2 דקות ומבצע HTTP GET/POST לכתובת
  * הזו (ר' README / הדרכת ההגדרה שנמסרה בנפרד). מבצע עבור כל אחד מהפורומים
- * הנתמכים (mitmachim / freeivr / otzaria / goodlink / binatop / eklimos):
+ * הנתמכים (mitmachim / freeivr / otzaria / goodlink / binatop / eklimos /
+ * miktzav):
  *
  *   1. שליפת כל המנויים הפעילים לצינתוקים (listTzintukSubscribers, ר'
  *      userStore.js) - כל מי שיש לו רשומה עם enabled=true תחת אותה מערכת.
@@ -116,7 +117,8 @@ const FORUMS = [
   { system: 'otzaria', app: require('../otzaria/index') },
   { system: 'goodlink', app: require('../goodlink/index') },
   { system: 'binatop', app: require('../binatop/index') },
-  { system: 'eklimos', app: require('../eklimos/index') }
+  { system: 'eklimos', app: require('../eklimos/index') },
+  { system: 'miktzav', app: require('../miktzav/index') }
 ];
 
 /** קריאת פקודת Redis בודדת מול Upstash REST API - זהה בעיקרון ל-upstashCommand

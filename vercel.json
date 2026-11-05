@@ -19,6 +19,9 @@
     "api/eklimos/index.js": {
       "maxDuration": 25
     },
+    "api/miktzav/index.js": {
+      "maxDuration": 25
+    },
     "api/transcribe.py": {
       "maxDuration": 20
     },

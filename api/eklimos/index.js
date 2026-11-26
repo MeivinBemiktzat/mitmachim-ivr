@@ -665,7 +665,7 @@ const POSTS_PER_PAGE = 20;
 
 const router = YemotRouter({
   printLog: process.env.NODE_ENV !== 'production',
-  timeout: 25000,
+  timeout: 180000,
   uncaughtErrorHandler: async (call, error) => {
     console.error('שגיאה לא מטופלת בשיחה', call.callId, error);
     try {
